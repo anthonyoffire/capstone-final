@@ -6,9 +6,11 @@ from torch.utils.data import DataLoader
 from torchvision import transforms
 from sklearn.model_selection import train_test_split
 from tqdm import tqdm
+import argparse
 
 from dataset import AgeDataset
 from model import build_model
+from image_shuffler import PickleShuffler, validate_grid_size
 
 IMAGE_SIZE = 128
 BATCH_SIZE = 64
@@ -24,9 +26,12 @@ PIN_MEMORY = True
 CSV_PATH = "./synthetic_csv/styleganPopulation80.csv"
 SAVE_PATH = "best_models_synth/styleganPopulation80.pth"
 
+GRID_SIZE = 1
+
 def get_transforms():
-    train_tf = transforms.Compose([
+    return transforms.Compose([
         transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
+        PickleShuffler(grid_size=GRID_SIZE),
         transforms.RandomHorizontalFlip(),
         transforms.RandomRotation(10),
         transforms.ColorJitter(brightness=0.2, contrast=0.2),
@@ -34,7 +39,6 @@ def get_transforms():
         transforms.Normalize(mean=[0.485, 0.456, 0.406],
                              std=[0.229, 0.224, 0.225]),
     ])
-    return train_tf
 
 def run():
     print("Device:", DEVICE)
@@ -95,4 +99,13 @@ def run():
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Shuffle images in a directory using a square grid.")
+    parser.add_argument(
+        "-g", "--grid_size",
+        type=validate_grid_size,
+        default=1, # No scramble
+        help="Grid size (e.g., 4 creates a 4x4 grid). Must be a power of 2 <= 128, > 0"
+    )
+    args = parser.parse_args()
+    GRID_SIZE = args.grid_size
     run()

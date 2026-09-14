@@ -3,6 +3,7 @@ import warnings
 import cv2 as cv
 import numpy as np
 from PIL import Image
+import argparse
 
 # Random seed for reproducibility
 SEED = 1337
@@ -13,6 +14,7 @@ SEED = 1337
 #                    Uses random seed for research reproducibility
 #                    shuffle returns a PIL Image
 #                    Added callable wrapper class for transforms
+#                    Added argument validator for this specific case 
 #----------------------------------------------------------------------
 class Shuffler:
     def __init__(self, image: Image.Image) -> None:
@@ -104,3 +106,13 @@ class PickleShuffler:
             return img
         shuffler = Shuffler(img)
         return shuffler.shuffle(self.grid_size, seed=SEED)
+
+def validate_grid_size(size_str: str) -> int:
+    try:
+        size = int(size_str)
+    except:
+        raise argparse.ArgumentTypeError(f"Invalid integer for grid size: '{size_str}'")
+    acceptable_sizes = {1, 2, 4, 8, 16, 32, 64, 128}
+    if size not in acceptable_sizes:
+        raise argparse.ArgumentTypeError(f"Grid size must be a power of 2, <= 128, > 0")
+    return size

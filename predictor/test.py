@@ -7,9 +7,11 @@ from PIL import Image
 from torch.utils.data import DataLoader
 from torchvision import transforms
 from tqdm import tqdm
+import argparse
 
 from dataset import AgeDataset
 from model import build_model
+from image_shuffler import PickleShuffler, validate_grid_size
 
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -19,14 +21,16 @@ AGE_RANGE = MAX_AGE - MIN_AGE
 
 IMAGE_SIZE = 128
 BATCH_SIZE = 32
+GRID_SIZE = 1
 
-trans = transforms.Compose([
+def get_transforms():
+    return transforms.Compose([
     transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
+    PickleShuffler(grid_size=GRID_SIZE),
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.485, 0.456, 0.406],
                          std=[0.229, 0.224, 0.225]),
 ])
-
 
 def load_model(model_p):
     save_model = torch.load(model_p, map_location=DEVICE)
@@ -38,7 +42,7 @@ def load_model(model_p):
 
 def eval(csv_path, modelp, age_thresholds=(18,), output_dir="./eval_outputs"):
     os.makedirs(output_dir, exist_ok=True)
-
+    trans = get_transforms()
     evaluation_dataset = AgeDataset(csv_path, transform=trans)
 
     loader = DataLoader(
@@ -192,4 +196,13 @@ def singlepred(filepath, modelpath):
 if __name__ == '__main__':
     csv_path = "./synthetic_csv/uniformTest.csv"
     model_path = "./best_models_synth/uniform70.pth"
+    parser = argparse.ArgumentParser(description="Shuffle images in a directory using a square grid.")
+    parser.add_argument(
+        "-g", "--grid_size",
+        type=validate_grid_size,
+        default=1, # No scramble
+        help="Grid size (e.g., 4 creates a 4x4 grid). Must be a power of 2 <= 128, > 0"
+    )
+    args = parser.parse_args()
+    GRID_SIZE = args.grid_size
     eval(csv_path, model_path, age_thresholds=(13, 15, 18, 21), output_dir="./eval_outputs_uniform70_stylegan")

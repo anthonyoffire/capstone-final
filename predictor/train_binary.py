@@ -7,9 +7,24 @@ import torch.optim as optim
 import torch.utils.data
 import torchvision.datasets as dset
 import torchvision.transforms as transforms
-
+import argparse
 from model import build_model
+from image_shuffler import PickleShuffler, validate_grid_size
 
+IMAGE_SIZE = 128
+GRID_SIZE = 1
+
+def get_transforms():
+    return transforms.Compose([
+        transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
+        PickleShuffler(grid_size=GRID_SIZE),
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomRotation(10),
+        transforms.ColorJitter(brightness=0.2, contrast=0.2),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                            std=[0.229, 0.224, 0.225]),
+    ])
 def main():
     seed = 42
     random.seed(seed)
@@ -17,7 +32,6 @@ def main():
     torch.use_deterministic_algorithms(True)
 
     dataroot = 'balancer/centered/sam90'
-    IMAGE_SIZE = 128
     num_channels = 3
     batch_size = 128
     num_epochs = 10
@@ -25,16 +39,7 @@ def main():
     workers = 2
     device = torch.device("cuda:0" if (torch.cuda.is_available() and num_gpus > 0) else "cpu")
 
-    dataset = dset.ImageFolder(root=dataroot,
-                               transform=transforms.Compose([
-                                   transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
-                                   transforms.RandomHorizontalFlip(),
-                                   transforms.RandomRotation(10),
-                                   transforms.ColorJitter(brightness=0.2, contrast=0.2),
-                                   transforms.ToTensor(),
-                                   transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                                        std=[0.229, 0.224, 0.225]),
-                               ]))
+    dataset = dset.ImageFolder(root=dataroot, transform=get_transforms())
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size,
                                              shuffle=True, num_workers=workers)
 
@@ -81,5 +86,14 @@ def main():
 
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description="Shuffle images in a directory using a square grid.")
+    parser.add_argument(
+        "-g", "--grid_size",
+        type=validate_grid_size,
+        default=1, # No scramble
+        help="Grid size (e.g., 4 creates a 4x4 grid). Must be a power of 2 <= 128, > 0"
+    )
+    args = parser.parse_args()
+    GRID_SIZE = args.grid_size
     freeze_support()
     main()
