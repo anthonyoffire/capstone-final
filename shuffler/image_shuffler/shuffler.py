@@ -1,17 +1,28 @@
 import random
 import warnings
-import pathlib
 import cv2 as cv
 import numpy as np
+from PIL import Image
 
+# Random seed for reproducibility
+SEED = 1337
 
+#----------------------------------------------------------------------
+# Shuffler: Modified from image-shuffler package by Gabriel Stork
+#           Changes: Input is PIL Image instead of reading from file
+#                    Uses random seed for research reproducibility
+#                    shuffle returns a PIL Image
+#                    Added callable wrapper class for transforms
+#----------------------------------------------------------------------
 class Shuffler:
-    def __init__(self, image: str) -> None:
-        self.path = pathlib.Path(image)
-        self.original = cv.imread(str(self.path.resolve()))
+    def __init__(self, image: Image.Image) -> None:
+        if not isinstance(image, Image.Image):
+            raise TypeError("Expected PIL Image")
+
+        self.original = cv.cvtColor(np.array(image), cv.COLOR_RGB2BGR)
 
         if self.original is None:
-            raise ValueError('image is None')
+            raise ValueError("Image is None")
 
         self.shuffled = self.original.copy()
         self.x = self.original.shape[1]
@@ -26,7 +37,7 @@ class Shuffler:
             )
         elif min(matrix) <= 0:
             raise ValueError('matrix values must be greater than 0')
-        elif matrix > (self.x, self.y):
+        elif matrix[0] > self.x or matrix[1] > self.y:
             raise ValueError('number of splits greater than pixels')
 
     def _check_pixel_loss(self, x_missing: int, y_missing: int) -> None:
@@ -45,19 +56,21 @@ class Shuffler:
         if len(self._pieces) > 0:
             self._pieces.clear()
 
-        for x_n, x_piece in enumerate(x_list):
-            for y_n, y_piece in enumerate(y_list):
+        for y_n, y_piece in enumerate(y_list):
+            for x_n, x_piece in enumerate(x_list):
                 self._pieces.append(
                     self.original[y_n * y:y_piece, x_n * x:x_piece]
                 )
 
     def _generate_image(self, cols: int) -> None:
         chunks = [
-            np.vstack(chunk) for chunk in zip(*[iter(self._pieces)] * cols)
+            np.hstack(self._pieces[i:i + cols])
+            for i in range(0, len(self._pieces), cols)
         ]
-        self.shuffled = np.hstack(np.array(chunks, dtype=np.uint8))
+        self.shuffled = np.vstack(chunks)
 
-    def shuffle(self, matrix: tuple) -> None:
+    def shuffle(self, grid_size: int, seed: int = None) -> Image.Image:
+        matrix = (grid_size, grid_size)
         self._check_argument(matrix)
 
         x = int(self.x / matrix[0])
@@ -70,17 +83,24 @@ class Shuffler:
 
         self._check_pixel_loss(x_missing, y_missing)
         self._split(x, y, x_list, y_list)
+
+        if seed is not None:
+            random.seed(seed)
         random.shuffle(self._pieces)
 
-        self._generate_image(matrix[1])
+        self._generate_image(matrix[0])
+        
+        return Image.fromarray(cv.cvtColor(self.shuffled, cv.COLOR_BGR2RGB))
 
-    def show(self) -> None:
-        cv.imshow('Image', self.shuffled)
-        cv.waitKey(0)
-        cv.destroyAllWindows()
+#----------------------------------------------------------------------
+# PickleShuffler: Callable wrapper for Shuffler
+#----------------------------------------------------------------------
+class PickleShuffler:
+    def __init__(self, grid_size: int):
+        self.grid_size = grid_size
 
-    def save(self) -> None:
-        cv.imwrite(
-            str(self.path.parent.resolve() / f'shuffled_{self.path.name}'),
-            self.shuffled,
-        )
+    def __call__(self, img: Image.Image) -> Image.Image:
+        if self.grid_size == 1: # No shuffle
+            return img
+        shuffler = Shuffler(img)
+        return shuffler.shuffle(self.grid_size, seed=SEED)
