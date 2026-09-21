@@ -19,12 +19,14 @@ LR = 3e-4
 MIN_AGE = 5
 MAX_AGE = 70
 AGE_RANGE = MAX_AGE - MIN_AGE
-NUM_WORKERS = 4
+NUM_WORKERS = 6
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 PIN_MEMORY = True
 
-CSV_PATH = "./synthetic_csv/styleganPopulation80.csv"
-SAVE_PATH = "best_models_synth/styleganPopulation80.pth"
+CSV_DIR = "./synthetic_csv/"
+SAVE_DIR = "best_models_synth/"
+CSV_PATH = ""
+SAVE_PATH = ""
 
 GRID_SIZE = 1
 
@@ -68,21 +70,26 @@ def run():
         model.train()
         running_loss = 0.0
 
-        for images, ages in tqdm(train_loader, desc="train"):
-            images = images.to(DEVICE, non_blocking=True)
-            ages = ages.to(DEVICE, non_blocking=True).unsqueeze(1)
+        total_images = len(train_ds)
+        with tqdm(total=total_images, desc="train", unit="img") as pbar:
+            for images, ages in tqdm(train_loader, desc="train"):
+                batch_len = len(images)
+                images = images.to(DEVICE, non_blocking=True)
+                ages = ages.to(DEVICE, non_blocking=True).unsqueeze(1)
 
-            optimizer.zero_grad(set_to_none=True)
-            with torch.amp.autocast("cuda", enabled=use_amp):
-                preds = model(images)
-                loss = criterion(preds, ages)
+                optimizer.zero_grad(set_to_none=True)
+                with torch.amp.autocast("cuda", enabled=use_amp):
+                    preds = model(images)
+                    loss = criterion(preds, ages)
 
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
 
-            running_loss += loss.item()
-
+                running_loss += loss.item()
+                # Update image count and display in progress bar
+                pbar.update(batch_len)
+                pbar.set_postfix({"loss": f"{loss.item():.4f}"})
         train_loss = running_loss / max(1, len(train_loader))
         print(f"Train loss (normalized MAE): {train_loss:.4f}")
 
@@ -106,6 +113,13 @@ if __name__ == "__main__":
         default=1, # No scramble
         help="Grid size (e.g., 4 creates a 4x4 grid). Must be a power of 2 <= 128, > 0"
     )
+    parser.add_argument(
+            "-i", "--input_file",
+            type=str,
+            help="Input csv file of dataset"
+    )
     args = parser.parse_args()
     GRID_SIZE = args.grid_size
+    CSV_PATH = CSV_DIR + args.input_file
+    SAVE_PATH = SAVE_DIR + args.input_file.removesuffix(".csv") + f"_g{GRID_SIZE}.pth"
     run()
