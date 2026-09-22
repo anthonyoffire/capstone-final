@@ -11,7 +11,7 @@ import argparse
 
 from dataset import AgeDataset
 from model import build_model
-from image_shuffler import PickleShuffler, validate_grid_size
+from image_shuffler import PIL_Shuffler, validate_grid_size
 
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -26,7 +26,7 @@ GRID_SIZE = 1
 def get_transforms():
     return transforms.Compose([
     transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
-    PickleShuffler(grid_size=GRID_SIZE),
+    PIL_Shuffler(grid_size=GRID_SIZE),
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.485, 0.456, 0.406],
                          std=[0.229, 0.224, 0.225]),

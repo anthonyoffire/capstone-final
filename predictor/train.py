@@ -10,7 +10,7 @@ import argparse
 
 from dataset import AgeDataset
 from model import build_model
-from image_shuffler import PickleShuffler, validate_grid_size
+from image_shuffler import PIL_Shuffler, validate_grid_size
 
 IMAGE_SIZE = 128
 BATCH_SIZE = 64
@@ -33,7 +33,7 @@ GRID_SIZE = 1
 def get_transforms():
     return transforms.Compose([
         transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
-        PickleShuffler(grid_size=GRID_SIZE),
+        PIL_Shuffler(grid_size=GRID_SIZE),
         transforms.RandomHorizontalFlip(),
         transforms.RandomRotation(10),
         transforms.ColorJitter(brightness=0.2, contrast=0.2),
@@ -115,6 +115,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
             "-i", "--input_file",
+            required=True,
             type=str,
             help="Input csv file of dataset"
     )

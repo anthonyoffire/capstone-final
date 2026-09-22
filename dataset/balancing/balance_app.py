@@ -15,6 +15,7 @@ def create_train_test_split(
         src_root: str | Path,
         train_root: str | Path,
         test_root: str | Path,
+        val_root: str | Path,
         distribution: str = "uniform",
         population_percentages: Sequence[float] | None = None,
         seed: int | None = 42,
@@ -24,6 +25,19 @@ def create_train_test_split(
     src_root = Path(src_root)
     train_root = Path(train_root)
     test_root = Path(test_root)
+    val_root = Path(val_root)
+
+    if not src_root.exists():
+        raise FileNotFoundError(f"Source root does not exist: {src_root}")
+
+    if not train_root.exists() and train_root.parent.exists() is False:
+        raise ValueError(f"Train root parent does not exist: {train_root.parent}")
+
+    if not test_root.exists() and test_root.parent.exists() is False:
+        raise ValueError(f"Test root parent does not exist: {test_root.parent}")
+
+    if not val_root.exists() and val_root.parent.exists() is False:
+        raise ValueError(f"Validation root parent does not exist: {val_root.parent}")
 
     rng = random.Random(seed)
     valid_exts = {ext.lower() for ext in image_extensions}
@@ -64,9 +78,11 @@ def create_train_test_split(
     # Create output directories
     train_root.mkdir(parents=True, exist_ok=True)
     test_root.mkdir(parents=True, exist_ok=True)
+    val_root.mkdir(parents=True, exist_ok=True)
 
     total_train = 0
     total_test = 0
+    total_val = 0
 
     for age in range(5, 71):
         files = list(age_to_files[age])
@@ -74,43 +90,45 @@ def create_train_test_split(
 
         n_test = test_counts[age]
         test_files = files[:n_test]
-        train_files = files[n_test:]
 
-        train_age_dir = train_root / str(age)
-        test_age_dir = test_root / str(age)
-        train_age_dir.mkdir(parents=True, exist_ok=True)
-        test_age_dir.mkdir(parents=True, exist_ok=True)
+        n_val = min(n_test, max(0, len(files) - n_test))
+        val_files = files[n_test:n_test + n_val]
+        train_files = files[n_test + n_val:]
 
-        for src_path in test_files:
-            dst_path = test_age_dir / src_path.name
-            if copy_files:
-                shutil.copy2(src_path, dst_path)
-            else:
-                shutil.move(src_path, dst_path)
+        split_groups = [
+            (train_root / str(age), train_files),
+            (test_root / str(age), test_files),
+            (val_root / str(age), val_files),
+        ]
 
-        for src_path in train_files:
-            dst_path = train_age_dir / src_path.name
-            if copy_files:
-                shutil.copy2(src_path, dst_path)
-            else:
-                shutil.move(src_path, dst_path)
+        for dst_dir, src_files in split_groups:
+            dst_dir.mkdir(parents=True, exist_ok=True)
+            for src_path in src_files:
+                dst_path = dst_dir / src_path.name
+                if copy_files:
+                    shutil.copy2(src_path, dst_path)
+                else:
+                    shutil.move(src_path, dst_path)
 
         total_test += len(test_files)
+        total_val += len(val_files)
         total_train += len(train_files)
 
     print(f"Created split using distribution='{distribution}'")
     print(f"Total train images: {total_train}")
     print(f"Total test images:  {total_test}")
+    print(f"Total val images:   {total_val}")
 
     print("\nPer-age summary:")
-    print("age | available | target | actual_test | actual_train")
-    print("-" * 55)
+    print("age | available | target | actual_test | actual_val | actual_train")
+    print("-" * 70)
     for age in range(101):
         available = counts[age]
         target = target_counts[age]
         actual_test = test_counts[age]
         actual_train = available - actual_test
-        print(f"{age:3d} | {available:9d} | {target:6d} | {actual_test:11d} | {actual_train:12d}")
+        actual_val = min(actual_test, max(0, available - actual_test))
+        print(f"{age:3d} | {available:9d} | {target:6d} | {actual_test:11d} | {actual_val:10d} | {actual_train:12d}")
 
 
 def balance(dist, percent_real, src1, src2, dst, age_min=5, age_max=70):

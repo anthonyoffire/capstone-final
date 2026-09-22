@@ -95,9 +95,9 @@ class Shuffler:
         return Image.fromarray(cv.cvtColor(self.shuffled, cv.COLOR_BGR2RGB))
 
 #----------------------------------------------------------------------
-# PickleShuffler: Callable wrapper for Shuffler
+# PIL_Shuffler: Callable wrapper for Shuffler
 #----------------------------------------------------------------------
-class PickleShuffler:
+class PIL_Shuffler:
     def __init__(self, grid_size: int):
         self.grid_size = grid_size
 
