@@ -218,3 +218,17 @@ __marimo__/
 .streamlit/secrets.toml
 
 .idea
+.vscode
+
+# Temp sorted images
+dataset/sort
+dataset/sort/*
+
+# Eval outputs
+/eval_outputs*/
+
+# generation models
+dataset/generation/pretrained_models/*
+dataset/generation/gen
+
+dataset/splitting/*.json

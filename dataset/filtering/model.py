@@ -1,26 +1,33 @@
 ﻿import torch.nn as nn
+from torchvision import models, transforms
 
 
-class Classifier(nn.Module):
-    def __init__(self, image_size, num_channels, ngpu):
-        super(Classifier, self).__init__()
-        self.image_size = image_size
-        self.num_channels = num_channels
-        self.ngpu = ngpu
-        self.main = nn.Sequential(
-            nn.Conv2d(num_channels, 64, 4, 2, 1), # 32
-            nn.MaxPool2d(2), # 16
-            nn.LeakyReLU(0.2),
-            nn.Conv2d(64, 128, 4, 2, 1), # 8
-            nn.BatchNorm2d(128),
-            nn.LeakyReLU(0.2),
-            nn.Conv2d(128, 32, 4, 2, 1),  # 4
-            nn.BatchNorm2d(32),
-            nn.LeakyReLU(0.2),
-            nn.Flatten(), # 4*4*32
-            nn.Linear(512, 1),
-            nn.Sigmoid()
-        )
+MODEL_TYPES = ("densenet121",)
+LEARNING_RATES = {"densenet121": 1e-5}
+CLASSIFICATION_THRESHOLD = 0.51
+PRETRAINED_IMAGE_SIZE = 224
+IMAGENET_MEAN = (0.485, 0.456, 0.406)
+IMAGENET_STD = (0.229, 0.224, 0.225)
 
-    def forward(self, discriminator_input):
-        return self.main(discriminator_input)
+
+def build_classifier(
+    model_type: str,
+    pretrained: bool = False,
+) -> nn.Module:
+    if model_type == "densenet121":
+        weights = models.DenseNet121_Weights.DEFAULT if pretrained else None
+        model = models.densenet121(weights=weights)
+        model.classifier = nn.Sequential(nn.Linear(model.classifier.in_features, 1), nn.Sigmoid())
+        return model
+    raise ValueError(f"Unknown model type {model_type!r}; choose one of {sorted(MODEL_TYPES)}.")
+
+
+def get_image_transform(model_type: str):
+    if model_type in MODEL_TYPES:
+        return transforms.Compose([
+            transforms.Resize(256),
+            transforms.CenterCrop(PRETRAINED_IMAGE_SIZE),
+            transforms.ToTensor(),
+            transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
+        ])
+    raise ValueError(f"Unknown model type {model_type!r}; choose one of {sorted(MODEL_TYPES)}.")

@@ -7,8 +7,15 @@ from tkinter import ttk, filedialog
 import math
 import random
 import shutil
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from itertools import islice
+from queue import Empty, Queue
 from pathlib import Path
 from typing import Iterable, Sequence
+
+COPY_WORKERS = 4
+COPY_BATCH_SIZE = 128
 
 
 def create_train_test_split(
@@ -131,7 +138,7 @@ def create_train_test_split(
         print(f"{age:3d} | {available:9d} | {target:6d} | {actual_test:11d} | {actual_val:10d} | {actual_train:12d}")
 
 
-def balance(dist, percent_real, src1, src2, dst, age_min=5, age_max=70):
+def balance(dist, percent_real, src1, src2, dst, age_min=5, age_max=70, progress_callback=None):
     percent_real = float(percent_real) / 100
     if dist == "US Population":
         dist = pickle.load(open("stats.pkl", "rb"))['us24']
@@ -198,8 +205,20 @@ def balance(dist, percent_real, src1, src2, dst, age_min=5, age_max=70):
 
         return alloc
 
-    real_files = {age: list_images(src1, age) for age in ages}
-    fake_files = {age: list_images(src2, age) for age in ages}
+    real_files = {}
+    fake_files = {}
+    scan_total = len(ages) * 2
+    scan_done = 0
+    for age in ages:
+        real_files[age] = list_images(src1, age)
+        scan_done += 1
+        if progress_callback:
+            progress_callback("Scanning source images", scan_done, scan_total)
+    for age in ages:
+        fake_files[age] = list_images(src2, age)
+        scan_done += 1
+        if progress_callback:
+            progress_callback("Scanning source images", scan_done, scan_total)
 
     real_counts = {age: len(real_files[age]) for age in ages}
     fake_counts = {age: len(fake_files[age]) for age in ages}
@@ -212,13 +231,16 @@ def balance(dist, percent_real, src1, src2, dst, age_min=5, age_max=70):
 
     best_result = None
 
-    for total_size in range(1, total_available + 1):
+    for search_step, total_size in enumerate(range(total_available, 0, -1), start=1):
+        if progress_callback and (
+            search_step == 1 or search_step % max(1, total_available // 100) == 0
+        ):
+            progress_callback("Finding best allocation", search_step, total_available)
         alloc = largest_remainder_allocation(total_size, probs, capacities)
         if alloc is None:
             continue
 
         bucket_sizes = {age: alloc[i] for i, age in enumerate(ages)}
-
         real_used = {
             age: min(real_counts[age], bucket_sizes[age])
             for age in ages
@@ -227,14 +249,12 @@ def balance(dist, percent_real, src1, src2, dst, age_min=5, age_max=70):
             age: bucket_sizes[age] - real_used[age]
             for age in ages
         }
-
         if any(fake_used[age] > fake_counts[age] for age in ages):
             continue
 
         total_real_used = sum(real_used.values())
         actual_real_fraction = total_real_used / total_size
-
-        error = abs(actual_real_fraction - percent_real)
+        split_error = abs(actual_real_fraction - percent_real)
 
         candidate = {
             "total_size": total_size,
@@ -242,45 +262,61 @@ def balance(dist, percent_real, src1, src2, dst, age_min=5, age_max=70):
             "real_used": real_used,
             "fake_used": fake_used,
             "actual_real_fraction": actual_real_fraction,
-            "error": error,
+            "split_error": split_error,
         }
 
-        if best_result is None:
+        if best_result is None or split_error < best_result["split_error"]:
             best_result = candidate
-        else:
-            if candidate["error"] < best_result["error"]:
+        elif math.isclose(split_error, best_result["split_error"], rel_tol=0.0, abs_tol=1e-12):
+            if total_size > best_result["total_size"]:
                 best_result = candidate
-            elif (
-                    math.isclose(candidate["error"], best_result["error"], rel_tol=0.0, abs_tol=1e-12)
-                    and candidate["total_size"] > best_result["total_size"]
-            ):
-                best_result = candidate
+
+        if split_error == 0:
+            break
+
+    if best_result is None:
+        raise ValueError(
+            "Could not reach the requested real-image fraction while preserving "
+            "the selected age distribution and available source counts."
+        )
 
     dst.mkdir(parents=True, exist_ok=True)
 
-    for age in ages:
-        n_real = best_result["real_used"][age]
-        n_fake = best_result["fake_used"][age]
+    total_to_copy = sum(best_result["real_used"].values()) + sum(best_result["fake_used"].values())
 
-        age_dir = dst / str(age)
-        age_dir.mkdir(parents=True, exist_ok=True)
+    def copy_selected_file(job: tuple[Path, Path]) -> None:
+        src_path, dst_path = job
+        dst_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src_path, dst_path)
 
-        real_pool = list(real_files[age])
-        fake_pool = list(fake_files[age])
+    def selected_copy_jobs():
+        for age in ages:
+            n_real = best_result["real_used"][age]
+            n_fake = best_result["fake_used"][age]
+            age_dir = dst / str(age)
+            age_dir.mkdir(parents=True, exist_ok=True)
 
-        rng.shuffle(real_pool)
-        rng.shuffle(fake_pool)
+            real_pool = list(real_files[age])
+            fake_pool = list(fake_files[age])
+            rng.shuffle(real_pool)
+            rng.shuffle(fake_pool)
 
-        selected_real = real_pool[:n_real]
-        selected_fake = fake_pool[:n_fake]
+            for src_path in real_pool[:n_real]:
+                yield src_path, age_dir / src_path.name
+            for src_path in fake_pool[:n_fake]:
+                yield src_path, age_dir / src_path.name
 
-        for src_path in selected_real:
-            dst_path = age_dir / src_path.name
-            shutil.copy2(src_path, dst_path)
-
-        for src_path in selected_fake:
-            dst_path = age_dir / src_path.name
-            shutil.copy2(src_path, dst_path)
+    copy_interval = max(1, math.ceil(total_to_copy / 100))
+    copied = 0
+    jobs = iter(selected_copy_jobs())
+    with ThreadPoolExecutor(max_workers=COPY_WORKERS) as executor:
+        while batch := list(islice(jobs, COPY_BATCH_SIZE)):
+            for _ in executor.map(copy_selected_file, batch):
+                copied += 1
+                if progress_callback and (
+                    copied % copy_interval == 0 or copied == total_to_copy
+                ):
+                    progress_callback("Copying selected images", copied, total_to_copy)
 
     total_real_used = sum(best_result["real_used"].values())
     total_fake_used = sum(best_result["fake_used"].values())
@@ -299,6 +335,9 @@ def main():
     root = tk.Tk()
     root.title("Dataset Balancer")
     root.resizable(True, True)
+    progress_queue = Queue()
+    result_queue = Queue()
+    worker_running = [False]
 
     tk.Label(
         root,
@@ -307,9 +346,72 @@ def main():
     ).pack(ipady=5, fill="x")
 
     def process_user_inputs():
+        if worker_running[0]:
+            return
         dist = dist_combobox.get()
         percent_real = percent_real_var.get()
-        balance(dist, percent_real, src1, src2, dst)
+        if not src1 or not src2 or not dst:
+            status_label.config(text="Choose real source, fake source, and output folders first.")
+            return
+
+        worker_running[0] = True
+        generate_button.config(state="disabled")
+        progress_bar.configure(maximum=1, value=0)
+        progress_label.config(text="Preparing...")
+        status_label.config(text="Balancing dataset...")
+
+        def report_progress(phase, completed, total):
+            progress_queue.put((phase, completed, total))
+
+        def worker():
+            try:
+                balance(
+                    dist,
+                    percent_real,
+                    src1,
+                    src2,
+                    dst,
+                    progress_callback=report_progress,
+                )
+                result_queue.put(None)
+            except Exception as error:
+                result_queue.put(error)
+
+        threading.Thread(target=worker, daemon=True).start()
+        root.after(50, poll_worker)
+
+    def poll_worker():
+        latest_progress = None
+        try:
+            while True:
+                latest_progress = progress_queue.get_nowait()
+        except Empty:
+            pass
+
+        if latest_progress is not None:
+            phase, completed, total = latest_progress
+            progress_bar.configure(maximum=max(total, 1), value=completed)
+            if phase == "Scanning source images":
+                progress_label.config(text=phase)
+            else:
+                progress_label.config(text=f"{phase}: {completed:,} / {total:,}")
+
+        try:
+            result = result_queue.get_nowait()
+        except Empty:
+            if worker_running[0]:
+                root.after(50, poll_worker)
+            return
+
+        worker_running[0] = False
+        generate_button.config(state="normal")
+        if result is None:
+            status_label.config(text="Balanced dataset created.")
+            progress_label.config(text="Complete")
+        else:
+            status_label.config(text=f"Balancing failed: {result}")
+            progress_label.config(text="Failed")
+
 
     tk.Label(root, text="Distribution").pack(anchor="w", padx=30)
     dist_combobox = ttk.Combobox(root, values=["Uniform", "US Population", "Centered Normal (mean 13)", "Centered Normal (mean 15)", "Centered Normal (mean 18)", "Centered Normal (mean 21)"])
@@ -386,14 +488,21 @@ def main():
         cursor="hand2",
     ).pack(pady=10, padx=30, fill="x")
 
-    # Sign in button
-    tk.Button(
+    generate_button = tk.Button(
         root,
         text="Generate balanced dataset",
         command=process_user_inputs,
         width=18,
         cursor="hand2",
-    ).pack(pady=10, padx=30, fill="x")
+    )
+    generate_button.pack(pady=10, padx=30, fill="x")
+
+    progress_label = tk.Label(root, text="", anchor="w")
+    progress_label.pack(fill="x", padx=30, pady=(2, 0))
+    progress_bar = ttk.Progressbar(root, mode="determinate", maximum=1, value=0)
+    progress_bar.pack(fill="x", padx=30, pady=(2, 6))
+    status_label = tk.Label(root, text="", anchor="w", wraplength=600, justify="left")
+    status_label.pack(fill="x", padx=30, pady=(0, 10))
 
     root.mainloop()
 
