@@ -232,3 +232,19 @@ dataset/generation/pretrained_models/*
 dataset/generation/gen
 
 dataset/splitting/*.json
+best_models/
+best_models_synth/
+checkpoints/
+compare_evals.py
+dataset/age_counts_real_pop.csv
+dataset/age_counts_real_uniform.csv
+dataset/age_counts_synth_combo.csv
+dataset/age_synth_plan.csv
+dataset/age_synth_plan_60real.csv
+dataset/age_synth_plan_70real.csv
+dataset/balanced/
+dataset/classified/
+dataset/no_dups/
+dataset/remaining_synth.csv
+dataset/subtract.py
+synthetic_csv/

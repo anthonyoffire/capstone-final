@@ -22,9 +22,8 @@ from variation import *
 MODEL_NAME = "serenity2"
 MODEL_FILE = "serenity_v21.safetensors"
 
-START_AGE = 5
-END_AGE = 70
-IMAGES_PER_AGE = 1
+START_AGE = 1
+END_AGE = 100
 OUTPUT_BASE_DIR = f"dataset/generation/gen/images"
 MODEL_BASE_DIR = "dataset/generation/pretrained_models"
 IMAGE_SIZE = 512
@@ -36,6 +35,12 @@ MIN_CROP_FRACTION = 0.55
 FACE_CROP_MARGIN = 0.6
 
 BASE_SEED = 42
+IMAGE_COUNTER = 0
+
+
+def make_seed(seed_index):
+    return (seed_index * 2654435761) & 0x7FFFFFFF
+
 
 NEGATIVE_PROMPT = (
     "cartoon, painting, cgi, deformed, disfigured, extra limbs, blurry, low quality, "
@@ -77,24 +82,29 @@ def build_prompt(target_age, seed):
         "medium headshot, complete hair visible, upper chest and shoulders in frame, "
         f"{lighting}, detailed face, sharp focus"
     )
+
 def get_num_per_age(target_age):
-    if target_age < 16 or target_age >= 60:
-        return 10_000
-    if target_age < 18:
+    if target_age < 8:
+        return 6_500
+    if target_age < 14:
         return 6_000
-    if target_age < 20:
-        return 4_000
+    if target_age < 16:
+        return 4_500
+    if target_age < 18:
+        return 3_000
     if target_age < 25:
         return 2_000
-    if target_age < 40:
-        return 1_000
-    if target_age < 45:
-        return 2_000
     if target_age < 50:
-        return 4_000
+        return 1_000
     if target_age < 55:
-        return 6_000
-    return 8_000
+        return 2_000
+    if target_age < 59:
+        return 3_000
+    if target_age < 63:
+        return 4_000
+    if target_age < 66:
+        return 4_500
+    return 5_000
 
 def detect_face_box(pil_img):
     """Return (fx, fy, fw, fh) for the largest detected face, or None if none found."""
@@ -193,7 +203,8 @@ def crop_to_face(pil_img):
 
 
 def generate_face_at_age(target_age, seed, pipe, compel):
-    prompt_embeds = compel(build_prompt(target_age, seed))
+    prompt = build_prompt(target_age, seed)
+    prompt_embeds = compel(prompt)
     negative_prompt_embeds = compel(NEGATIVE_PROMPT)
 
     generator = torch.Generator(device=device).manual_seed(seed)
@@ -211,7 +222,7 @@ def generate_face_at_age(target_age, seed, pipe, compel):
     return crop_to_face(raw_image)
 
 def main():
-    global BASE_SEED
+    global BASE_SEED, IMAGE_COUNTER
     model_loc = f"{MODEL_BASE_DIR}/{MODEL_FILE}"
     save_loc = f"{OUTPUT_BASE_DIR}/{MODEL_NAME}"
     print(f"[{model_loc}], [{save_loc}]")
@@ -227,20 +238,22 @@ def main():
     pipe.set_progress_bar_config(disable=True)
     compel = Compel(tokenizer=pipe.tokenizer, text_encoder=pipe.text_encoder)
 
-    total_images = (END_AGE - START_AGE + 1) * IMAGES_PER_AGE
+    total_images = sum(
+        get_num_per_age(age) for age in range(START_AGE, END_AGE + 1)
+    )
     print(
         f"Generating dataset: Ages {START_AGE} to {END_AGE}, "
-        f"{IMAGES_PER_AGE} images per age."
+        f"{total_images} images total."
     )
     with tqdm(total=total_images, desc="Generating Images", unit="img") as pbar:
         for age in range(START_AGE, END_AGE + 1):
             age_dir = os.path.join(save_loc, str(age))
             os.makedirs(age_dir, exist_ok=True)
-
-            for idx in range(IMAGES_PER_AGE):
+            num_images = get_num_per_age(age)
+            for idx in range(num_images):
                 trials = 0
                 while(True):
-                    seed = (BASE_SEED * 2654435761) & 0x7FFFFFFF
+                    seed = make_seed(BASE_SEED)
                     BASE_SEED += 1
                     trials += 1
                     image = generate_face_at_age(
@@ -253,10 +266,12 @@ def main():
                         break
                 if image is None:
                     continue
-                output_path = os.path.join(age_dir, f"face_{idx:04d}.png")
-                image.save(output_path)
+                
+                output_path = os.path.join(age_dir, f"synth_{IMAGE_COUNTER}.jpg")
+                image.save(output_path, format="JPEG", quality=95)
+                IMAGE_COUNTER += 1
                 pbar.set_postfix(
-                    age=age, idx=f"{idx + 1}/{IMAGES_PER_AGE}"
+                    age=age, idx=f"{idx + 1}/{num_images}"
                 )
                 pbar.update(1)
 

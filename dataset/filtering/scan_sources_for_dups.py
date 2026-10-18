@@ -8,7 +8,7 @@ from pathlib import Path
 from tqdm import tqdm
 
 ROOT_DIRS = [
-    r"../images/real/imdb-clean-1024",
+    r"../images/src/imdb_crop",
 ]
 
 OUTPUT_DIR = r"../images/src/"
@@ -111,6 +111,14 @@ def main():
                 if len(file_list) > 1:
                     for file_path in file_list:
                         dup_writer.writerow([sha1, file_path])
+
+        duplicate_files = duplicate_file_count(root_hashes)
+        duplicate_groups = duplicate_group_count(root_hashes)
+
+        print(f"[{name}] Files participating in duplicates: {duplicate_files:,}")
+        print(f"[{name}] Duplicate groups: {duplicate_groups:,}")
+        print(f"[{name}] All files CSV: {all_csv_path}")
+        print(f"[{name}] Duplicate files CSV: {dup_csv_path}")
 
     total_duplicate_files = duplicate_file_count(all_hashes)
     total_duplicate_groups = duplicate_group_count(all_hashes)

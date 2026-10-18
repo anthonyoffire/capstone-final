@@ -16,7 +16,7 @@ EXPRESSIONS = [
     "neutral expression",
     "slight smile",
     "slight frown",
-    "big smile"
+    "big smile",
     "disappointed look"
 ]
 ETHNICITIES = [
@@ -373,9 +373,29 @@ def get_environment(target_age, rng):
             ]
         )
     return rng.choice(ENVIRONMENTS)
+
 def get_subject(target_age, ethnicity):
     subject = f"a {ethnicity} {target_age} year"
-    if target_age <= 8:
+    if target_age <= 1:
+        subject += (
+            " one year old baby, infant, baby face, "
+            "chubby cheeks, infant proportions, very young child"
+        )
+    elif target_age <= 2:
+        subject += (
+            " very young toddler, baby face, chubby cheeks, "
+            "infant-like proportions"
+        )
+    elif target_age <= 4:
+        subject += (
+            " very young preschool child"
+        )
+    elif target_age <= 6:
+        subject += (
+            " very young child, soft facial structure, "
+            "small youthful features"
+        )
+    elif target_age <= 8:
         subject += " very young child"
     elif target_age <= 11:
         subject += " young child"
@@ -401,12 +421,46 @@ def get_subject(target_age, ethnicity):
         subject += " older aged adult, visible wrinkles, clearly aged face"
     elif target_age <= 69:
         subject += " senior adult, prominent wrinkles, noticeably aged face"
+    elif target_age <= 74:
+        subject += (
+            " older senior adult, visible wrinkles, aged facial structure, "
+            "slightly sagging skin"
+        )
+
+    elif target_age <= 84:
+        subject += (
+            " elderly adult, noticeable wrinkles, aged skin texture, "
+            "facial aging, gray hair"
+        )
+
+    elif target_age <= 94:
+        subject += (
+            " very elderly adult, deep wrinkles, pronounced smile lines, "
+            "aged skin texture, mostly white hair"
+        )
     else:
-        subject += " elderly senior adult, deep wrinkles, strongly aged facial features"
+        subject += (
+            " very elderly adult, white hair, deep facial wrinkles, "
+            "aged skin texture, sunken cheeks"
+        )
     return subject
 
 def select_hair_color(age, traits, rng):
-    if age >= 65:
+    if age >= 85:
+        return rng.choice([
+            "white hair",
+            "thin white hair",
+            "sparse white hair",
+            "fine white hair",
+        ])
+    elif age >= 75:
+        return rng.choice([
+            "white hair",
+            "mostly white hair",
+            "light gray hair",
+            "silver hair",
+        ])
+    elif age >= 65:
         return rng.choice([
             "gray hair",
             "white hair",

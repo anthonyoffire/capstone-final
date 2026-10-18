@@ -4,8 +4,8 @@ import pandas as pd
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-INPUT_CSV = "../images/src/imdb-clean-1024_duplicates.csv"
-OUTPUT_DIR = "../images/src/imdb_clean_dups"
+INPUT_CSV = "dataset/filtering/duplicates.csv"
+OUTPUT_DIR = "../images/real/uniform_split/mnf_dups"
 
 # "copy" or "move"
 MODE = "copy"
