@@ -19,7 +19,7 @@ from tqdm import tqdm
 from compel import Compel
 from variation import *
 
-MODEL_NAME = "serenity2"
+MODEL_NAME = "serenity"
 MODEL_FILE = "serenity_v21.safetensors"
 
 START_AGE = 1
