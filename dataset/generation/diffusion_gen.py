@@ -35,7 +35,6 @@ NUM_INFERENCE_STEPS = 10
 MIN_CROP_FRACTION = 0.55
 FACE_CROP_MARGIN = 0.6
 
-BASE_SEED = 42
 IMAGE_COUNTER = 0
 
 
@@ -223,7 +222,7 @@ def generate_face_at_age(target_age, seed, pipe, compel):
     return crop_to_face(raw_image)
 
 def main():
-    global BASE_SEED, IMAGE_COUNTER
+    global IMAGE_COUNTER
     model_loc = f"{MODEL_BASE_DIR}/{MODEL_FILE}"
     save_loc = f"{OUTPUT_BASE_DIR}/{MODEL_NAME}"
     print(f"[{model_loc}], [{save_loc}]")
@@ -252,8 +251,7 @@ def main():
             for idx in range(num_images):
                 trials = 0
                 while(True):
-                    seed = make_seed(BASE_SEED)
-                    BASE_SEED += 1
+                    seed = make_seed(IMAGE_COUNTER)
                     trials += 1
                     image = generate_face_at_age(
                         target_age=age, 
@@ -261,7 +259,10 @@ def main():
                         pipe=pipe,
                         compel=compel
                     )
-                    if image is not None or trials > 20:
+                    if image is not None:
+                        break
+                    IMAGE_COUNTER += 1
+                    if trials > 20:
                         break
                 if image is None:
                     continue
