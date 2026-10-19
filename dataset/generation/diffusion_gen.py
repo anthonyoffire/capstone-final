@@ -23,7 +23,8 @@ MODEL_NAME = "serenity"
 MODEL_FILE = "serenity_v21.safetensors"
 
 START_AGE = 1
-END_AGE = 100
+END_AGE = 99
+IMAGES_PER_AGE = 500
 OUTPUT_BASE_DIR = f"dataset/generation/gen/images"
 MODEL_BASE_DIR = "dataset/generation/pretrained_models"
 IMAGE_SIZE = 512
@@ -238,9 +239,7 @@ def main():
     pipe.set_progress_bar_config(disable=True)
     compel = Compel(tokenizer=pipe.tokenizer, text_encoder=pipe.text_encoder)
 
-    total_images = sum(
-        get_num_per_age(age) for age in range(START_AGE, END_AGE + 1)
-    )
+    total_images = (END_AGE - START_AGE + 1) * IMAGES_PER_AGE
     print(
         f"Generating dataset: Ages {START_AGE} to {END_AGE}, "
         f"{total_images} images total."
@@ -249,7 +248,7 @@ def main():
         for age in range(START_AGE, END_AGE + 1):
             age_dir = os.path.join(save_loc, str(age))
             os.makedirs(age_dir, exist_ok=True)
-            num_images = get_num_per_age(age)
+            num_images = IMAGES_PER_AGE
             for idx in range(num_images):
                 trials = 0
                 while(True):

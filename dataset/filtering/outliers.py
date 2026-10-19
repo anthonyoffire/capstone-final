@@ -18,10 +18,10 @@ OUTPUT_CSV_4STDDEV = True
 OUTPUT_CSV_5STDDEV = True
 
 COPY_OUTLIERS = True
-COPY_STDDEV_LEVEL = 3
+COPY_STDDEV_LEVEL = 4
 
-DELETE_OUTLIERS = False
-DELETE_STDDEV_LEVEL = 5
+DELETE_OUTLIERS = True
+DELETE_STDDEV_LEVEL = 4
 
 #-------------------------------------------------------------------
 # Stats Aggregation
@@ -223,6 +223,16 @@ if COPY_OUTLIERS:
 # Delete outliers from source dir
 #-----------------------------------------------------
 if DELETE_OUTLIERS:
+    deletion_stats = age_stats[["target_age", "std"]].copy()
+    deletion_stats["std_dev_threshold"] = (
+        deletion_stats["std"] * DELETE_STDDEV_LEVEL
+    )
+    deletion_stats = deletion_stats.rename(columns={"target_age": "age"})
+    deletion_stats[["age", "std_dev_threshold"]].to_csv(
+        os.path.join(OUTPUT_DIR, "deletion_stats.csv"),
+        index=False
+    )
+
     delete_df = sample_stats[
         sample_stats["stddevs_from_mean"] >= DELETE_STDDEV_LEVEL
     ]
