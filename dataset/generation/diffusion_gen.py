@@ -1,4 +1,6 @@
+import argparse
 import os
+import sys
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 os.environ["DEEPFACE_LOG_LEVEL"] = "40"
@@ -22,9 +24,6 @@ from variation import *
 MODEL_NAME = "serenity"
 MODEL_FILE = "serenity_v21.safetensors"
 
-START_AGE = 1
-END_AGE = 99
-IMAGES_PER_AGE = 500
 OUTPUT_BASE_DIR = f"dataset/generation/gen/images"
 MODEL_BASE_DIR = "dataset/generation/pretrained_models"
 IMAGE_SIZE = 512
@@ -34,8 +33,6 @@ NUM_INFERENCE_STEPS = 10
 
 MIN_CROP_FRACTION = 0.55
 FACE_CROP_MARGIN = 0.6
-
-IMAGE_COUNTER = 0
 
 
 def make_seed(seed_index):
@@ -221,8 +218,56 @@ def generate_face_at_age(target_age, seed, pipe, compel):
 
     return crop_to_face(raw_image)
 
-def main():
-    global IMAGE_COUNTER
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(
+        prog="diffusion_gen.py",
+        usage="%(prog)s [-h] -s start age -e end age -n number to gen -c image counter starting number",
+        description="Generate age-specific face images.",
+        epilog=(
+            "Example:\n"
+            "  python diffusion_gen.py -s 18 -e 25 -n 500 -c 0"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "-s", "--start-age", type=int,
+        metavar="AGE", help="First age to generate (inclusive)."
+    )
+    parser.add_argument(
+        "-e", "--end-age", type=int,
+        metavar="AGE", help="Last age to generate (inclusive)."
+    )
+    parser.add_argument(
+        "-n", "--images-per-age", type=int,
+        metavar="COUNT", help="Number of images to generate for each age."
+    )
+    parser.add_argument(
+        "-c", "--image-counter", type=int,
+        metavar="COUNTER",
+        help="Starting counter for both the seed and output filename."
+    )
+    args = parser.parse_args(argv)
+    if any(
+        value is None
+        for value in (
+            args.start_age,
+            args.end_age,
+            args.images_per_age,
+            args.image_counter,
+        )
+    ):
+        parser.print_usage(file=sys.stderr)
+        parser.exit(2)
+    if args.start_age > args.end_age:
+        parser.error("--start-age must be less than or equal to --end-age")
+    if args.images_per_age < 1:
+        parser.error("--images-per-age must be at least 1")
+    if args.image_counter < 0:
+        parser.error("--image-counter must be non-negative")
+    return args
+
+
+def main(start_age, end_age, images_per_age, image_counter):
     model_loc = f"{MODEL_BASE_DIR}/{MODEL_FILE}"
     save_loc = f"{OUTPUT_BASE_DIR}/{MODEL_NAME}"
     print(f"[{model_loc}], [{save_loc}]")
@@ -238,20 +283,20 @@ def main():
     pipe.set_progress_bar_config(disable=True)
     compel = Compel(tokenizer=pipe.tokenizer, text_encoder=pipe.text_encoder)
 
-    total_images = (END_AGE - START_AGE + 1) * IMAGES_PER_AGE
+    total_images = (end_age - start_age + 1) * images_per_age
     print(
-        f"Generating dataset: Ages {START_AGE} to {END_AGE}, "
+        f"Generating dataset: Ages {start_age} to {end_age}, "
         f"{total_images} images total."
     )
     with tqdm(total=total_images, desc="Generating Images", unit="img") as pbar:
-        for age in range(START_AGE, END_AGE + 1):
+        for age in range(start_age, end_age + 1):
             age_dir = os.path.join(save_loc, str(age))
             os.makedirs(age_dir, exist_ok=True)
-            num_images = IMAGES_PER_AGE
+            num_images = images_per_age
             for idx in range(num_images):
                 trials = 0
                 while(True):
-                    seed = make_seed(IMAGE_COUNTER)
+                    seed = make_seed(image_counter)
                     trials += 1
                     image = generate_face_at_age(
                         target_age=age, 
@@ -261,15 +306,15 @@ def main():
                     )
                     if image is not None:
                         break
-                    IMAGE_COUNTER += 1
+                    image_counter += 1
                     if trials > 20:
                         break
                 if image is None:
                     continue
                 
-                output_path = os.path.join(age_dir, f"synth_{IMAGE_COUNTER}.jpg")
+                output_path = os.path.join(age_dir, f"synth_{image_counter}.jpg")
                 image.save(output_path, format="JPEG", quality=95)
-                IMAGE_COUNTER += 1
+                image_counter += 1
                 pbar.set_postfix(
                     age=age, idx=f"{idx + 1}/{num_images}"
                 )
@@ -278,4 +323,10 @@ def main():
     print(f"\nDone. Dataset saved to '{OUTPUT_BASE_DIR}'.")
 
 if __name__ == "__main__":
-    main()
+    arguments = parse_args()
+    main(
+        arguments.start_age,
+        arguments.end_age,
+        arguments.images_per_age,
+        arguments.image_counter,
+    )
