@@ -1,34 +1,16 @@
 import os
 from pathlib import Path
-import numpy as np
-import pandas as pd
 import matplotlib.pyplot as plt
-from types import SimpleNamespace
-import sys
-from pathlib import Path
-import cv2
-from PIL import Image
-import torch
-from torchvision import transforms
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from tqdm import tqdm
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-PREDICTOR_DIR = PROJECT_ROOT / "predictor"
-sys.path.insert(0, str(PROJECT_ROOT))
-from predictor.model import build_model
-
-MIVOLO_DIR = Path.home() / "MiVOLO"
-sys.path.insert(0, str(MIVOLO_DIR))
-
-from mivolo.predictor import Predictor
 
 # ==========================================================
 # CONFIG
 # ==========================================================
 
-INPUT_DIR = "dataset/generation/gen/images"
-OUTPUT_DIR = "dataset/generation/gen/stats_age"
+COUNT_ONLY = True
+INPUT_DIR = (PROJECT_ROOT / "../images/fake/synth_serenity_85").resolve()
+OUTPUT_DIR = (PROJECT_ROOT / "../images/fake/ser_stats_age").resolve()
 IMAGE_SIZE = 128
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 DEVICE = "cuda"
@@ -36,38 +18,56 @@ CUSTOM_MODEL_PATH = PROJECT_ROOT / "best_models" / "efficientnet_b4_realonly.pth
 MIN_AGE = 1
 MAX_AGE = 100
 AGE_RANGE = 100
-args = SimpleNamespace(
-    detector_weights="dataset/generation/pretrained_models/yolov8x_person_face.pt",
-    checkpoint="dataset/generation/pretrained_models/model_imdb_cross_person_4.22_99.46.pth.tar",
-    with_persons=True,
-    disable_faces=False,
-    device="cuda:0",
-    draw=False,
-    num_workers=4
-)
-predictor = Predictor(args, verbose=False)
 
-def get_custom_transforms():
-    return transforms.Compose([
-        transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
-        transforms.ToTensor(),
-        transforms.Normalize(
-            mean=[0.485, 0.456, 0.406],
-            std=[0.229, 0.224, 0.225]
-        ),
-    ])
-def load_custom_model(model_p):
-    save_model = torch.load(model_p, map_location=DEVICE)
-    model = build_model("efficientnet_b4").to(DEVICE)
-    result = model.load_state_dict(
-        save_model["model_state_dict"]
+if not COUNT_ONLY:
+    import sys
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import cv2
+    import numpy as np
+    import pandas as pd
+    import torch
+    from PIL import Image
+    from torchvision import transforms
+    from tqdm import tqdm
+    from types import SimpleNamespace
+
+    sys.path.insert(0, str(PROJECT_ROOT))
+    from predictor.model import build_model
+
+    MIVOLO_DIR = Path.home() / "MiVOLO"
+    sys.path.insert(0, str(MIVOLO_DIR))
+    from mivolo.predictor import Predictor
+
+    args = SimpleNamespace(
+        detector_weights="dataset/generation/pretrained_models/yolov8x_person_face.pt",
+        checkpoint="dataset/generation/pretrained_models/model_imdb_cross_person_4.22_99.46.pth.tar",
+        with_persons=True,
+        disable_faces=False,
+        device="cuda:0",
+        draw=False,
+        num_workers=4
     )
-    model.eval()
-    return model
-custom_model = load_custom_model(
-    CUSTOM_MODEL_PATH
-)
-custom_transforms = get_custom_transforms()
+    predictor = Predictor(args, verbose=False)
+
+    def get_custom_transforms():
+        return transforms.Compose([
+            transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
+            transforms.ToTensor(),
+            transforms.Normalize(
+                mean=[0.485, 0.456, 0.406],
+                std=[0.229, 0.224, 0.225]
+            ),
+        ])
+
+    def load_custom_model(model_p):
+        save_model = torch.load(model_p, map_location=DEVICE)
+        model = build_model("efficientnet_b4").to(DEVICE)
+        model.load_state_dict(save_model["model_state_dict"])
+        model.eval()
+        return model
+
+    custom_model = load_custom_model(CUSTOM_MODEL_PATH)
+    custom_transforms = get_custom_transforms()
 
 # ==========================================================
 # AGE ESTIMATORS
@@ -122,40 +122,128 @@ def process_image(img_path, target_age, model_name, estimator_name, predict_age)
         "error": float(detected_age - target_age),
         "file": img_path.name,
     })
+
+
+def get_model_age_dirs(input_root):
+    def get_age_dirs(parent):
+        age_dirs = []
+        with os.scandir(parent) as entries:
+            for entry in entries:
+                if not entry.is_dir(follow_symlinks=False):
+                    continue
+                try:
+                    age_val = float(entry.name)
+                except ValueError:
+                    continue
+                age_dirs.append((age_val, Path(entry.path)))
+        return sorted(age_dirs)
+
+    root_age_dirs = get_age_dirs(input_root)
+    if root_age_dirs:
+        return [(input_root.name, root_age_dirs)]
+
+    model_age_dirs = []
+    with os.scandir(input_root) as entries:
+        model_dirs = sorted(
+            (Path(entry.path) for entry in entries if entry.is_dir(follow_symlinks=False)),
+            key=lambda model_dir: model_dir.name,
+        )
+    for model_dir in model_dirs:
+        model_age_dirs.append((model_dir.name, get_age_dirs(model_dir)))
+    return model_age_dirs
+
+
+def count_images(age_dir):
+    with os.scandir(age_dir) as entries:
+        return sum(
+            1
+            for entry in entries
+            if entry.is_file(follow_symlinks=False)
+            and os.path.splitext(entry.name)[1].lower() in IMAGE_EXTS
+        )
+
+
+def run_count_only(input_root):
+    model_age_dirs = get_model_age_dirs(input_root)
+    ages = sorted({
+        target_age
+        for _, age_dirs in model_age_dirs
+        for target_age, _ in age_dirs
+    })
+    if not ages:
+        raise ValueError(f"No numeric age folders found in: {input_root}")
+
+    counts_by_model = {}
+    for model_name, age_dirs in model_age_dirs:
+        counts_by_age = {age: 0 for age in ages}
+        for target_age, age_dir in age_dirs:
+            counts_by_age[target_age] = count_images(age_dir)
+        counts_by_model[model_name] = counts_by_age
+
+    plt.figure(figsize=(12, 8))
+    for model_name, counts_by_age in counts_by_model.items():
+        plt.plot(
+            ages,
+            [counts_by_age[age] for age in ages],
+            marker="o",
+            linewidth=2,
+            label=model_name,
+        )
+
+    plt.xlabel("Target Age")
+    plt.ylabel("Image Count")
+    plt.title("Images per Target Age Bucket")
+    tick_step = max(1, (len(ages) + 14) // 15)
+    age_ticks = ages[::tick_step]
+    if age_ticks[-1] != ages[-1]:
+        age_ticks.append(ages[-1])
+    plt.xticks(age_ticks)
+    plt.grid(True, alpha=0.3)
+    if len(counts_by_model) > 1:
+        plt.legend()
+    plt.tight_layout()
+
+    output_path = OUTPUT_DIR / "image_count_by_age.png"
+    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close()
+    total_images = sum(
+        count
+        for counts_by_age in counts_by_model.values()
+        for count in counts_by_age.values()
+    )
+    print(f"Counted {total_images} images across {len(ages)} age buckets.")
+    print(f"Saved: {output_path}")
+
+
 # ==========================================================
 # MAIN
 # ==========================================================
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
+input_root = Path(INPUT_DIR)
+if not input_root.is_dir():
+    raise FileNotFoundError(f"Input image directory does not exist: {input_root}")
+
+if COUNT_ONLY:
+    run_count_only(input_root)
+    raise SystemExit(0)
+
 for estimator_name, predict_age in ESTIMATORS.items():
     if estimator_name == "mivolo":
         continue
 
-    input_root = Path(INPUT_DIR)
     records = []
+    model_age_dirs = get_model_age_dirs(input_root)
 
-    for model_dir in sorted(input_root.iterdir()):
-        if not model_dir.is_dir():
-            continue
-        model_name = model_dir.name
+    for model_name, age_dirs in model_age_dirs:
         print(f"\n=== {estimator_name} === {model_name} ===")
-
-        age_dirs = []
-        for age_dir in model_dir.iterdir():
-            if not age_dir.is_dir():
-                continue
-            try:
-                age_val = float(age_dir.name)
-            except ValueError:
-                continue
-            age_dirs.append((age_val, age_dir))
         age_dirs.sort()
 
         jobs = []
         for target_age, age_dir in age_dirs:
             for img_path in sorted(age_dir.iterdir()):
-                if img_path.suffix.lower() not in IMAGE_EXTS:
+                if not img_path.is_file() or img_path.suffix.lower() not in IMAGE_EXTS:
                     continue
                 jobs.append(
                     (
@@ -253,23 +341,16 @@ for estimator_name, predict_age in ESTIMATORS.items():
         ]
         counts_by_model[model_name] = counts
 
-    x = np.arange(len(ages))
-    bar_width = 0.8 / len(models)
-
-    for i, model_name in enumerate(models):
-        offsets = x + (i - (len(models) - 1) / 2) * bar_width
-        plt.bar(
-            offsets,
+    for model_name in models:
+        plt.plot(
+            ages,
             counts_by_model[model_name],
-            width=bar_width,
+            marker="o",
+            linewidth=2,
             label=model_name,
         )
 
-    plt.xticks(
-        x,
-        ages,
-        rotation=90,
-    )
+    plt.xticks(ages, rotation=90)
 
     plt.xlabel("Detected Age")
     plt.ylabel("Image Count")

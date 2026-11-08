@@ -9,19 +9,19 @@ import shutil
 
 # CSV from running test.py
 EFFICIENTNET_CSV = "eval_outputs_efficientnet_b4_realonly.pth_serenity/age_predictions.csv"
-OUTPUT_DIR = "dataset/generation/gen/stats_age/serenity"
+OUTPUT_DIR = "../images/fake/ser_dups"
 
 OUTPUT_CSV_1STDDEV = False
 OUTPUT_CSV_2STDDEV = False
-OUTPUT_CSV_3STDDEV = False
+OUTPUT_CSV_3STDDEV = True
 OUTPUT_CSV_4STDDEV = True
 OUTPUT_CSV_5STDDEV = True
 
 COPY_OUTLIERS = True
-COPY_STDDEV_LEVEL = 4
+COPY_STDDEV_LEVEL = 5
 
 DELETE_OUTLIERS = True
-DELETE_STDDEV_LEVEL = 4
+DELETE_STDDEV_LEVEL = 5
 
 #-------------------------------------------------------------------
 # Stats Aggregation

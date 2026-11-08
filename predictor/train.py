@@ -1,7 +1,11 @@
+import faulthandler
+faulthandler.enable()
+
 import warnings
 warnings.filterwarnings("ignore", message=".*pynvml package is deprecated.*")
 
 import os
+import traceback
 import pandas as pd
 import torch
 import torch.nn as nn
@@ -14,14 +18,15 @@ import argparse
 from dataset import AgeDataset
 from model import build_model
 from image_shuffler import PIL_Shuffler, validate_grid_size
+from batch_transforms import BatchImageTransforms
 
 
 
 IMAGE_SIZE = 128
 BATCH_SIZE = 64
 MAX_EPOCHS = 30
-PATIENCE = 3
-MIN_DELTA = 0.0005
+PATIENCE = 5
+MIN_DELTA = 0.0001
 LR = 3e-4
 MIN_AGE = 5
 MAX_AGE = 70
@@ -29,6 +34,7 @@ AGE_RANGE = MAX_AGE - MIN_AGE
 NUM_WORKERS = 4
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 PIN_MEMORY = True
+LOAD_CHECKPOINT_IF_EXISTS = True
 
 CSV_DIR = "./synthetic_csv/"
 SAVE_DIR = "best_models/"
@@ -37,16 +43,18 @@ VAL_CSV = ""
 SAVE_PATH = ""
 GRID_SIZE = 1
 
-MODEL = "efficientnet_b4"
+MODEL = "efficientnet_b0"
 MODELS = [
-    "resnet18",
+    # "resnet18",
     # "resnet34",
     # "resnet50",
     # "densenet121",
-    # "densenet169",
+    # "densenet169",Y
     # "densenet201",
     # "efficientnet_b3",
-    # "efficientnet_v2_s"
+    # "efficientnet_v2_s",
+    # "convnext_tiny",
+    "efficientnet_b0"
 ]
 def get_training_transforms():
     return transforms.Compose([
@@ -70,11 +78,31 @@ def get_validation_transforms():
     ])
 
 
+def get_gpu_input_transforms():
+    return transforms.Compose([
+        transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
+        transforms.PILToTensor(),
+    ])
+
+
 def run():
     print("Device:", DEVICE)
 
-    train_tf = get_training_transforms()
-    validation_tf = get_validation_transforms()
+    batch_transforms = None
+    if DEVICE == "cuda":
+        train_tf = get_gpu_input_transforms()
+        validation_tf = get_gpu_input_transforms()
+        batch_transforms = BatchImageTransforms(
+            grid_size=GRID_SIZE,
+            image_size=IMAGE_SIZE,
+            device=DEVICE,
+            mean=(0.485, 0.456, 0.406),
+            std=(0.229, 0.224, 0.225),
+        )
+        print("Image shuffling and augmentation will run on CUDA.")
+    else:
+        train_tf = get_training_transforms()
+        validation_tf = get_validation_transforms()
 
     train_ds = AgeDataset(TRAIN_CSV, transform=train_tf)
     validation_ds = AgeDataset(VAL_CSV, transform=validation_tf)
@@ -92,6 +120,13 @@ def run():
         try:
             model = build_model(model_name).to(DEVICE)
             SAVE_PATH = SAVE_DIR + f"{model_name}_{os.path.basename(TRAIN_CSV).removesuffix('.csv')}_g{GRID_SIZE}.pth"
+            if LOAD_CHECKPOINT_IF_EXISTS:
+                if os.path.isfile(SAVE_PATH):
+                    checkpoint = torch.load(SAVE_PATH, map_location=DEVICE)
+                    model.load_state_dict(checkpoint["model_state_dict"])
+                    print(f"Loaded checkpoint weights from {SAVE_PATH}")
+                else:
+                    print(f"No checkpoint found at {SAVE_PATH}; starting with fresh weights.")
             criterion = nn.L1Loss()
             optimizer = torch.optim.AdamW(model.parameters(), lr=LR)
             scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=MAX_EPOCHS)
@@ -111,9 +146,11 @@ def run():
 
                 total_images = len(train_ds)
                 with tqdm(total=total_images, desc="train", unit="img") as pbar:
-                    for images, ages in train_loader:
+                    for images, ages, _ in train_loader:
                         batch_len = len(images)
                         images = images.to(DEVICE, non_blocking=True)
+                        if batch_transforms is not None:
+                            images = batch_transforms(images, augment=True)
                         ages = ages.to(DEVICE, non_blocking=True).unsqueeze(1)
 
                         optimizer.zero_grad(set_to_none=True)
@@ -141,9 +178,11 @@ def run():
                 val_running_loss = 0.0
                 with tqdm(total=len(validation_ds), desc="val", unit="img") as pbar:
                     with torch.no_grad():
-                        for images, ages in validation_loader:
+                        for images, ages, _ in validation_loader:
                             batch_len = len(images)
                             images = images.to(DEVICE, non_blocking=True)
+                            if batch_transforms is not None:
+                                images = batch_transforms(images)
                             ages = ages.to(DEVICE, non_blocking=True).unsqueeze(1)
 
                             with torch.amp.autocast("cuda", enabled=use_amp):
@@ -161,7 +200,7 @@ def run():
 
                 scheduler.step()
 
-                if val_loss < best_val_loss - MIN_DELTA:
+                if val_loss < best_val_loss - MIN_DELTA and val_loss < .153:
                     best_val_loss = val_loss
                     epochs_without_improvement = 0
                     os.makedirs(SAVE_DIR, exist_ok=True)
@@ -180,6 +219,7 @@ def run():
                         break
         except Exception as e:
             print(f"Error training {model_name}: {e}")
+            traceback.print_exc()
             continue
 
 if __name__ == "__main__":
@@ -187,24 +227,26 @@ if __name__ == "__main__":
     parser.add_argument(
         "-g", "--grid_size",
         type=validate_grid_size,
-        default=1, # No scramble
+        default=128, # No scramble
         help="Grid size (e.g., 4 creates a 4x4 grid). Must be a power of 2 <= 128, > 0"
     )
     parser.add_argument(
         "-t", "--training_csv",
-        required=True,
+        required=False,
         type=str,
+        default="serenity8020_train.csv",
         help="Csv file for train dataset"
     )
     parser.add_argument(
         "-v", "--validation_csv",
-        required=True,
+        required=False,
         type=str,
+        default="serenity8020_val.csv",
         help="Csv file for validation dataset"
     )
     args = parser.parse_args()
     GRID_SIZE = args.grid_size
     TRAIN_CSV = CSV_DIR + args.training_csv
     VAL_CSV = CSV_DIR + args.validation_csv
-    #SAVE_PATH = SAVE_DIR + MODEL + "_" + args.training_csv.removesuffix(".csv") + f"_g{GRID_SIZE}.pth"
+    SAVE_PATH = SAVE_DIR + MODEL + "_" + args.training_csv.removesuffix(".csv") + f"_g{GRID_SIZE}.pth"
     run()

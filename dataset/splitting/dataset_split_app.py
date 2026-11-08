@@ -14,6 +14,15 @@ from tkinter import filedialog, messagebox, ttk
 
 CONFIG_PATH = Path(__file__).with_name("dataset_split_config.json")
 
+SAMPLING_MODE_LABELS = {
+    "random_file": "Random file sampling",
+    "random_folder": "Random folder sampling",
+    "balanced": "Balanced (uniform then random)",
+}
+SAMPLING_MODES_BY_LABEL = {
+    label: mode for mode, label in SAMPLING_MODE_LABELS.items()
+}
+
 
 def normalize_extensions(value: str) -> set[str]:
     return {
@@ -210,6 +219,121 @@ def apply_optional_limits(total_files: int, counts: dict[str, int], min_counts: 
 
     return counts
 
+
+def _order_files_for_sampling(
+    files: list[Path],
+    src_root: Path,
+    rng: random.Random,
+    sampling_mode: str,
+) -> list[Path]:
+    if sampling_mode not in {"random_file", "random_folder"}:
+        raise ValueError(f"Unsupported sampling mode: {sampling_mode}")
+
+    if sampling_mode == "random_file":
+        ordered_files = files.copy()
+        rng.shuffle(ordered_files)
+        return ordered_files
+
+    folder_pools: dict[str, list[Path]] = {}
+    file_folders: dict[Path, str] = {}
+    for path in files:
+        relative_parts = path.relative_to(src_root).parts
+        folder = relative_parts[0] if len(relative_parts) > 1 else ""
+        folder_pools.setdefault(folder, []).append(path)
+        file_folders[path] = folder
+
+    folder_positions = {
+        folder: {path: index for index, path in enumerate(pool)}
+        for folder, pool in folder_pools.items()
+    }
+
+    def remove_from_pool(pool: list[Path], positions: dict[Path, int], path: Path) -> None:
+        position = positions.pop(path)
+        last_path = pool.pop()
+        if position < len(pool):
+            pool[position] = last_path
+            positions[last_path] = position
+
+    active_folders = list(folder_pools)
+    active_folder_positions = {folder: index for index, folder in enumerate(active_folders)}
+    ordered_files: list[Path] = []
+
+    for _ in range(len(files)):
+        folder = active_folders[rng.randrange(len(active_folders))]
+        folder_pool = folder_pools[folder]
+        selected = folder_pool[rng.randrange(len(folder_pool))]
+        ordered_files.append(selected)
+        folder = file_folders[selected]
+        folder_pool = folder_pools[folder]
+        remove_from_pool(folder_pool, folder_positions[folder], selected)
+        if not folder_pool:
+            folder_position = active_folder_positions.pop(folder)
+            last_folder = active_folders.pop()
+            if folder_position < len(active_folders):
+                active_folders[folder_position] = last_folder
+                active_folder_positions[last_folder] = folder_position
+
+    return ordered_files
+
+
+def _weighted_split_schedule(counts: dict[str, int]) -> list[str]:
+    split_names = [name for name, count in counts.items() if count > 0]
+    total = sum(counts.values())
+    current_weights = {name: 0 for name in split_names}
+    schedule: list[str] = []
+
+    for _ in range(total):
+        for name in split_names:
+            current_weights[name] += counts[name]
+        selected_split = max(split_names, key=current_weights.__getitem__)
+        current_weights[selected_split] -= total
+        schedule.append(selected_split)
+
+    return schedule
+
+
+def _split_balanced_files(
+    files: list[Path],
+    src_root: Path,
+    counts: dict[str, int],
+    rng: random.Random,
+) -> dict[str, list[Path]]:
+    split_map = {name: [] for name in ("train", "val", "test")}
+    uniform_counts = {
+        "val": counts["val"] // 2,
+        "test": counts["test"] // 2,
+    }
+    uniform_total = sum(uniform_counts.values())
+
+    if uniform_total:
+        folder_order = _order_files_for_sampling(
+            files, src_root, rng, "random_folder"
+        )
+        uniform_files = folder_order[:uniform_total]
+        uniform_schedule = _weighted_split_schedule(uniform_counts)
+        for path, split_name in zip(uniform_files, uniform_schedule):
+            split_map[split_name].append(path)
+    else:
+        uniform_files = []
+
+    uniform_file_set = set(uniform_files)
+    remaining_files = [path for path in files if path not in uniform_file_set]
+    rng.shuffle(remaining_files)
+
+    remaining_counts = {
+        name: counts[name] - len(split_map[name])
+        for name in ("train", "val", "test")
+    }
+    offset = 0
+    for name in ("train", "val", "test"):
+        split_map[name].extend(
+            remaining_files[offset:offset + remaining_counts[name]]
+        )
+        offset += remaining_counts[name]
+
+    return split_map
+
+
 def create_dataset_split(
         src_root: str | Path,
         train_root: str | Path,
@@ -232,6 +356,7 @@ def create_dataset_split(
         cancel_event=None,
         cancelled_state=None,
         max_workers: int | None = None,
+        sampling_mode: str = "random_file",
 ) -> dict[str, int]:
     src_root = Path(src_root)
     train_root = Path(train_root)
@@ -240,6 +365,8 @@ def create_dataset_split(
 
     if not src_root.exists():
         raise FileNotFoundError(f"Source root does not exist: {src_root}")
+    if sampling_mode not in SAMPLING_MODE_LABELS:
+        raise ValueError(f"Unknown sampling mode: {sampling_mode}")
 
     for root, label in [
         (train_root, "Train root"),
@@ -277,16 +404,20 @@ def create_dataset_split(
         raise ValueError("The final split totals exceed the number of files in the source directory.")
 
     rng = random.Random(seed)
-    rng.shuffle(files)
-
-    split_map = {
-        "train": files[:counts["train"]],
-        "val": files[counts["train"]:counts["train"] + counts["val"]],
-        "test": files[
-            counts["train"] + counts["val"]:
-            counts["train"] + counts["val"] + counts["test"]
-        ],
-    }
+    if sampling_mode == "balanced":
+        split_map = _split_balanced_files(files, src_root, counts, rng)
+    else:
+        ordered_files = _order_files_for_sampling(
+            files, src_root, rng, sampling_mode
+        )
+        split_map = {
+            "train": ordered_files[:counts["train"]],
+            "val": ordered_files[counts["train"]:counts["train"] + counts["val"]],
+            "test": ordered_files[
+                counts["train"] + counts["val"]:
+                counts["train"] + counts["val"] + counts["test"]
+            ],
+        }
 
     successful_counts = {"train": 0, "val": 0, "test": 0}
     overwrite_action = None
@@ -612,6 +743,10 @@ def main():
     write_split_info_var = tk.BooleanVar(value=config.get("write_split_info", True))
     random_seed_var = tk.BooleanVar(value=config.get("use_seed", True))
     seed_var = tk.StringVar(value=str(config.get("seed", "42")))
+    configured_sampling_mode = config.get("sampling_mode", "random_file")
+    if configured_sampling_mode not in SAMPLING_MODE_LABELS:
+        configured_sampling_mode = "random_file"
+    sampling_mode_var = tk.StringVar(value=SAMPLING_MODE_LABELS[configured_sampling_mode])
 
     directory_frame = tk.Frame(root)
     directory_frame.pack(fill="x", padx=30)
@@ -782,6 +917,11 @@ def main():
                 return
             extensions = normalize_extensions(extension_var.get())
 
+        sampling_mode = SAMPLING_MODES_BY_LABEL.get(sampling_mode_var.get())
+        if sampling_mode is None:
+            messagebox.showerror("Invalid sampling mode", "Choose a valid sampling mode.")
+            return
+
         retain_subdirectories = parse_all_subdirectories_var.get() and retain_subdirectories_var.get()
         parse_all = parse_all_subdirectories_var.get()
         write_split_info = write_split_info_var.get()
@@ -828,6 +968,7 @@ def main():
                     progress_callback=update_split_progress,
                     cancel_event=split_cancel_event,
                     cancelled_state=cancelled_state,
+                    sampling_mode=sampling_mode,
                 )
                 preview_queue.put(lambda: split_finished(counts, None, cancelled_state[0]))
             except Exception as exc:
@@ -912,7 +1053,10 @@ def main():
     update_extension_status()
 
     def remove_extension_focus(event):
-        if event.widget is not extension_entry and not isinstance(event.widget, (tk.Entry, ttk.Entry)):
+        if (
+            event.widget is not extension_entry
+            and root.tk.call("focus") == str(extension_entry)
+        ):
             root.focus_set()
 
     root.bind_all("<Button-1>", remove_extension_focus, add="+")
@@ -1020,6 +1164,17 @@ def main():
     tk.Label(right_bottom_frame, text="Options", font=section_font).pack(anchor="w", pady=(8, 5))
     retain_options_frame = tk.Frame(right_bottom_frame)
     retain_options_frame.pack(anchor="w", fill="x", padx=20)
+
+    sampling_row = tk.Frame(retain_options_frame)
+    sampling_row.pack(anchor="w", pady=(0, 4))
+    tk.Label(sampling_row, text="Sampling:", font=limits_font).pack(side="left", padx=(0, 8))
+    ttk.Combobox(
+        sampling_row,
+        textvariable=sampling_mode_var,
+        values=tuple(SAMPLING_MODE_LABELS.values()),
+        state="readonly",
+        width=25,
+    ).pack(side="left")
 
     def toggle_parse_subdirectories():
         if parse_all_subdirectories_var.get():
@@ -1179,6 +1334,7 @@ def main():
             "write_split_info": write_split_info_var.get(),
             "use_seed": random_seed_var.get(),
             "seed": seed_var.get(),
+            "sampling_mode": SAMPLING_MODES_BY_LABEL[sampling_mode_var.get()],
         })
         root.destroy()
 

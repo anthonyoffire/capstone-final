@@ -234,6 +234,8 @@ dataset/generation/gen
 dataset/splitting/*.json
 best_models/
 best_models_synth/
+best_models_bin/
+best_models_bin2/
 checkpoints/
 compare_evals.py
 dataset/age_counts_real_pop.csv
@@ -244,7 +246,6 @@ dataset/age_synth_plan_60real.csv
 dataset/age_synth_plan_70real.csv
 dataset/balanced/
 dataset/classified/
-dataset/no_dups/
 dataset/remaining_synth.csv
-dataset/subtract.py
 synthetic_csv/
+*.png

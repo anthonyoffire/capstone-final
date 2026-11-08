@@ -8,7 +8,7 @@ INPUT_CSV = "dataset/filtering/duplicates.csv"
 OUTPUT_DIR = "../images/real/uniform_split/mnf_dups"
 
 # "copy" or "move"
-MODE = "copy"
+MODE = "move"
 
 # Adjust as needed
 NUM_WORKERS = 16

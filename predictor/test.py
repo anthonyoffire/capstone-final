@@ -15,6 +15,8 @@ import pandas as pd
 from dataset import AgeDataset
 from model import build_model
 from image_shuffler import PIL_Shuffler, validate_grid_size
+from batch_transforms import BatchImageTransforms
+from evaluation_metrics import wilson_confidence_interval
 import matplotlib.pyplot as plt
 from pathlib import Path
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -26,16 +28,34 @@ AGE_RANGE = MAX_AGE - MIN_AGE
 IMAGE_SIZE = 128
 BATCH_SIZE = 32
 GRID_SIZE = 1
-MODEL_NAME = "efficientnet_b4"
+MODEL_NAME = "efficientnet_b0"
 
 def get_evaluation_transforms():
+    if DEVICE == "cuda":
+        return transforms.Compose([
+            transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
+            transforms.PILToTensor(),
+        ])
     return transforms.Compose([
-    transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
-    PIL_Shuffler(grid_size=GRID_SIZE),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                         std=[0.229, 0.224, 0.225]),
-])
+        transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
+        PIL_Shuffler(grid_size=GRID_SIZE),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                             std=[0.229, 0.224, 0.225]),
+    ])
+
+
+def get_batch_evaluation_transforms():
+    if DEVICE != "cuda":
+        return None
+    return BatchImageTransforms(
+        grid_size=GRID_SIZE,
+        image_size=IMAGE_SIZE,
+        device=DEVICE,
+        mean=(0.485, 0.456, 0.406),
+        std=(0.229, 0.224, 0.225),
+    )
+
 
 def load_model(model_p):
     save_model = torch.load(model_p, map_location=DEVICE)
@@ -44,9 +64,93 @@ def load_model(model_p):
     model.eval()
     return model
 
+
+def write_evaluation_markdown(
+    report_path,
+    model_path,
+    csv_path,
+    grid_size,
+    regression_metrics,
+    classification_rows,
+):
+    report_path = Path(report_path)
+    lines = [
+        "# Regression model evaluation",
+        "",
+        f"- **Checkpoint:** `{Path(model_path).stem}`",
+        f"- **Evaluation CSV:** `{csv_path}`",
+        f"- **Grid size:** {grid_size}",
+        "",
+        "## Overall regression metrics",
+        "",
+        "| Metric | Result |",
+        "|---|---:|",
+        f"| MAE | {regression_metrics['mae']:.2f} years |",
+        f"| RMSE | {regression_metrics['rmse']:.2f} years |",
+        f"| Median absolute error | {regression_metrics['medae']:.2f} years |",
+        f"| Bias | {regression_metrics['bias']:.2f} years |",
+        f"| Standard error | {regression_metrics['std_err']:.2f} years |",
+        f"| Maximum absolute error | {regression_metrics['max_err']:.2f} years |",
+        f"| Samples | {regression_metrics['samples']:,} |",
+        "",
+        "## Classification metrics by age cutoff",
+        "",
+    ]
+
+    for row in classification_rows:
+        (
+            threshold,
+            accuracy,
+            precision,
+            recall,
+            specificity,
+            specificity_ci_lower,
+            specificity_ci_upper,
+            f1,
+            tp,
+            tn,
+            fp,
+            fn,
+        ) = row
+        actual_under_total = tn + fp
+        actual_over_total = fn + tp
+        predicted_under_total = tn + fn
+        predicted_over_total = fp + tp
+        total = actual_under_total + actual_over_total
+
+        lines.extend([
+            f"### Age cutoff: {threshold}",
+            "",
+            "| Metric | Result |",
+            "|---|---:|",
+            f"| Accuracy | {accuracy:.2%} |",
+            f"| Precision | {precision:.2%} |",
+            f"| Recall | {recall:.2%} |",
+            f"| Specificity | {specificity:.2%} |",
+            f"| Specificity 95% CI | {specificity_ci_lower:.2%}-{specificity_ci_upper:.2%} |",
+            f"| F1 score | {f1:.2%} |",
+            "",
+            "| Predicted / Actual "
+            f"| Actual < {threshold} "
+            f"| Actual >= {threshold} | Predicted total |",
+            "|---|---:|---:|---:|",
+            f"| Predicted < {threshold} | TN: {tn:,} "
+            f"| FN: {fn:,} | {predicted_under_total:,} |",
+            f"| Predicted >= {threshold} | FP: {fp:,} "
+            f"| TP: {tp:,} | {predicted_over_total:,} |",
+            f"| Actual total | {actual_under_total:,} "
+            f"| {actual_over_total:,} | {total:,} |",
+            "",
+        ])
+
+    report_path.write_text("\n".join(lines), encoding="utf-8")
+    return report_path
+
+
 def eval(csv_path, model_path, age_thresholds=(18,), output_dir="./eval_outputs"):
     os.makedirs(output_dir, exist_ok=True)
     trans = get_evaluation_transforms()
+    batch_transforms = get_batch_evaluation_transforms()
     evaluation_dataset = AgeDataset(csv_path, transform=trans)
 
     loader = DataLoader(
@@ -69,6 +173,8 @@ def eval(csv_path, model_path, age_thresholds=(18,), output_dir="./eval_outputs"
     with torch.no_grad():
         for images, ages, file_paths in tqdm(loader, desc="testing"):
             images = images.to(DEVICE, non_blocking=True)
+            if batch_transforms is not None:
+                images = batch_transforms(images)
             ages = ages.to(DEVICE, non_blocking=True).unsqueeze(1)
 
             preds = model(images)
@@ -142,13 +248,21 @@ def eval(csv_path, model_path, age_thresholds=(18,), output_dir="./eval_outputs"
         precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
         recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
         specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0
+        specificity_ci_lower, specificity_ci_upper = wilson_confidence_interval(
+            tn, tn + fp
+        )
         f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
 
         print(f"\n=== Classification @ {threshold} ===")
         print(f"Accuracy: {accuracy:.4f}, F1: {f1:.4f}")
+        print(
+            f"Specificity: {specificity:.4f} "
+            f"(95% CI: {specificity_ci_lower:.4f}-{specificity_ci_upper:.4f})"
+        )
 
         summary_rows.append([
-            threshold, accuracy, precision, recall, specificity, f1, tp, tn, fp, fn
+            threshold, accuracy, precision, recall, specificity,
+            specificity_ci_lower, specificity_ci_upper, f1, tp, tn, fp, fn
         ])
 
         # per-age classification
@@ -171,7 +285,8 @@ def eval(csv_path, model_path, age_thresholds=(18,), output_dir="./eval_outputs"
         writer = csv.writer(f)
         writer.writerow([
             "threshold", "accuracy", "precision", "recall",
-            "specificity", "f1", "tp", "tn", "fp", "fn"
+            "specificity", "specificity_95ci_lower", "specificity_95ci_upper",
+            "f1", "tp", "tn", "fp", "fn"
         ])
         writer.writerows(summary_rows)
 
@@ -274,10 +389,31 @@ def eval(csv_path, model_path, age_thresholds=(18,), output_dir="./eval_outputs"
 
     print(f"Saved: {dist_plot_path}")
 
+    report_path = write_evaluation_markdown(
+        Path(output_dir) / "evaluation_report.md",
+        model_path,
+        csv_path,
+        GRID_SIZE,
+        {
+            "mae": mae,
+            "rmse": rmse,
+            "medae": medae,
+            "bias": bias,
+            "std_err": std_err,
+            "max_err": max_err,
+            "samples": len(errors),
+        },
+        summary_rows,
+    )
+    print(f"Saved: {report_path}")
+
 def singlepred(filepath, modelpath):
     model = load_model(modelpath)
     pred_img = Image.open(filepath).convert('RGB')
     pred_img = get_evaluation_transforms()(pred_img).unsqueeze(0).to(DEVICE)
+    batch_transforms = get_batch_evaluation_transforms()
+    if batch_transforms is not None:
+        pred_img = batch_transforms(pred_img)
 
     with torch.no_grad():
         pred = model(pred_img)
@@ -289,8 +425,6 @@ def singlepred(filepath, modelpath):
 
 
 if __name__ == '__main__':
-    csv_path = "./synthetic_csv/serenity.csv"
-    model_path = "./best_models/efficientnet_b4_realonly.pth"
     parser = argparse.ArgumentParser(description="Run testing on a shuffled image set.")
     parser.add_argument(
         "-g", "--grid_size",
@@ -298,8 +432,30 @@ if __name__ == '__main__':
         default=1, # No scramble
         help="Grid size (e.g., 4 creates a 4x4 grid). Must be a power of 2 <= 128, > 0"
     )
+    parser.add_argument(
+        "--test_csv",
+        default="./synthetic_csv/serenity8020_val.csv",
+        help="CSV file for the evaluation dataset.",
+    )
+    parser.add_argument(
+        "--model_path",
+        default="./best_models/efficientnet_b0_serenity8020_train_g1.pth",
+        help="Model checkpoint to evaluate.",
+    )
+    parser.add_argument(
+        "--model_name",
+        default=MODEL_NAME,
+        help="Torchvision model architecture used by the checkpoint.",
+    )
     args = parser.parse_args()
     GRID_SIZE = args.grid_size
-    checkpoint_title = Path(model_path).name.removesuffix(".csv")
-    test_name = Path(csv_path).name.removesuffix(".csv")
-    eval(csv_path, model_path, age_thresholds=(13, 15, 18, 21), output_dir=f"./eval_outputs_{checkpoint_title}_{test_name}")
+    MODEL_NAME = args.model_name
+    checkpoint_title = Path(args.model_path).stem
+    test_name = Path(args.test_csv).stem
+    output_dir = f"./eval_outputs_{checkpoint_title}_{test_name}_g{GRID_SIZE}"
+    eval(
+        args.test_csv,
+        args.model_path,
+        age_thresholds=(13, 15, 18, 21),
+        output_dir=output_dir,
+    )

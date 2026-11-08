@@ -39,6 +39,17 @@ def build_model(model_name: str, dropout: float = 0.3):
             nn.Sigmoid()
         )
 
+    # --------------------------
+    # ConvNeXt family
+    # --------------------------
+    elif model_name.startswith("convnext"):
+        in_features = model.classifier[2].in_features
+        model.classifier[2] = nn.Sequential(
+            nn.Dropout(dropout),
+            nn.Linear(in_features, 1),
+            nn.Sigmoid()
+        )
+
     else:
         raise ValueError(f"Unsupported model: {model_name}")
 

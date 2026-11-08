@@ -2,7 +2,7 @@ import os
 import pandas as pd
 
 aggregation_directories = [
-    "dataset/generation/gen/images/serenity", 
+    r"..\images\serenity8020_train_val_test\val18",
 ]
 save_names = []
 minAge = 5
@@ -27,7 +27,7 @@ def main():
 
         df = pd.DataFrame(listRows)
 
-        df.to_csv("./synthetic_csv/" + save_names[index], index=False)
+        df.to_csv("./synthetic_csv/" +"serenity8020_"+ save_names[index], index=False)
 
         print(save_names[index])
         print(df.head())

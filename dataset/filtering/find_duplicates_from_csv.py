@@ -5,10 +5,10 @@ import hashlib
 from pathlib import Path
 
 # Global variables for input and output CSV file paths
-INPUT_CSV = "eval_outputs_efficientnet_b4_g1.pth_all-minus-noface/age_predictions.csv"
+INPUT_CSV = "eval_outputs_efficientnet_b4_realonly.pth_serenity/age_predictions.csv"
 OUTPUT_CSV = "dataset/filtering/duplicates.csv"
 OUT_DIR = "dataset/filtering"
-COPY = True
+COPY = False
 
 def hash_file(file_path):
     sha256 = hashlib.sha256()
@@ -67,7 +67,7 @@ def find_duplicates_from_csv(csv_file):
 
 
 def save_duplicates(df_original, duplicates):
-    """Save duplicate files with hash, file_path, predicted_age."""
+    """Save duplicate files with hash, file_path, predicted_age, and age."""
 
     age_lookup = dict(
         zip(df_original["file_path"], df_original["detected_age"])
@@ -78,7 +78,8 @@ def save_duplicates(df_original, duplicates):
             rows.append({
                 "hash": file_hash,
                 "file_path": path,
-                "predicted_age": age_lookup.get(path)
+                "predicted_age": age_lookup.get(path),
+                "age": Path(path).parent.name,
             })
 
     pd.DataFrame(rows).to_csv(OUTPUT_CSV, index=False)
