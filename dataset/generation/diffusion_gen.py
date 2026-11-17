@@ -1,4 +1,5 @@
 import argparse
+import csv
 import os
 import sys
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
@@ -33,6 +34,24 @@ NUM_INFERENCE_STEPS = 10
 
 MIN_CROP_FRACTION = 0.55
 FACE_CROP_MARGIN = 0.6
+MAX_GENERATION_ATTEMPTS = 21
+SEED_SPACE_SIZE = 1 << 31
+ETHNICITY_TAGS = {
+    "Scandinavian": "white",
+    "British": "white",
+    "Eastern European": "white",
+    "Mediterranean": "white",
+    "Ashkenazi Jewish": "white",
+    "Irish": "white",
+    "Black African": "black",
+    "Black": "black",
+    "East Asian": "east asian",
+    "Southeast Asian": "southeast asian",
+    "South Asian": "south asian",
+    "Middle Eastern": "middle eastern",
+    "Hispanic": "hispanic",
+}
+TAGS_CSV_COLUMNS = ("file_name", "age", "ethnicity", "gender")
 
 
 def make_seed(seed_index):
@@ -48,7 +67,8 @@ NEGATIVE_PROMPT = (
 )
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
-def build_prompt(target_age, seed):
+
+def build_prompt_and_tags(target_age, seed):
     rng = random.Random(seed)
     ethnicity = rng.choice(ETHNICITIES)
     traits = ETHNICITY_TRAITS[ethnicity]
@@ -72,13 +92,18 @@ def build_prompt(target_age, seed):
     environment = get_environment(target_age, rng)
     if gender == "Male" and hair_len == "long hair":
         hair_len = rng.choice(["long hair", "short hair"])
-    return (
+    prompt = (
         f"{style} in a {environment} of {subject} {gender} with {hair_texture} {hair_len} natural {hair_color} hair and {eye_color} eyes, "
         f"{face_weight}, {face_shape}, {face_mod}, natural {eyebrow_type}, {lip_type}, {nose_type}, "
         f"{head_pose}, {shirt_type}, {expression}, "
         "medium headshot, complete hair visible, upper chest and shoulders in frame, "
         f"{lighting}, detailed face, sharp focus"
     )
+    return prompt, ethnicity, gender
+
+
+def build_prompt(target_age, seed):
+    return build_prompt_and_tags(target_age, seed)[0]
 
 def get_num_per_age(target_age):
     if target_age < 8:
@@ -200,7 +225,7 @@ def crop_to_face(pil_img):
 
 
 def generate_face_at_age(target_age, seed, pipe, compel):
-    prompt = build_prompt(target_age, seed)
+    prompt, ethnicity, gender = build_prompt_and_tags(target_age, seed)
     prompt_embeds = compel(prompt)
     negative_prompt_embeds = compel(NEGATIVE_PROMPT)
 
@@ -216,7 +241,7 @@ def generate_face_at_age(target_age, seed, pipe, compel):
         generator=generator,
     ).images[0]
 
-    return crop_to_face(raw_image)
+    return crop_to_face(raw_image), ethnicity, gender
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
@@ -246,6 +271,18 @@ def parse_args(argv=None):
         metavar="COUNTER",
         help="Starting counter for both the seed and output filename."
     )
+    parser.add_argument(
+        "--tags-only", action="store_true",
+        help="Write the selected tags CSV without loading the model or generating images."
+    )
+    parser.add_argument(
+        "--append-tags", action="store_true",
+        help="Append tag rows to the selected CSV instead of replacing it."
+    )
+    parser.add_argument(
+        "--tags-file", default="tags.csv",
+        help="Tags CSV filename inside the output directory (default: tags.csv)."
+    )
     args = parser.parse_args(argv)
     if any(
         value is None
@@ -264,61 +301,110 @@ def parse_args(argv=None):
         parser.error("--images-per-age must be at least 1")
     if args.image_counter < 0:
         parser.error("--image-counter must be non-negative")
+    total_images = (
+        (args.end_age - args.start_age + 1) * args.images_per_age
+    )
+    max_attempts = 1 if args.tags_only else MAX_GENERATION_ATTEMPTS
+    counter_end = args.image_counter + total_images * max_attempts
+    if counter_end > SEED_SPACE_SIZE:
+        parser.error(
+            "requested counter range exceeds the non-repeating seed space "
+            f"of {SEED_SPACE_SIZE} counters"
+        )
     return args
 
 
-def main(start_age, end_age, images_per_age, image_counter):
+def main(
+    start_age,
+    end_age,
+    images_per_age,
+    image_counter,
+    tags_only=False,
+    append_tags=False,
+    tags_file="tags.csv",
+):
     model_loc = f"{MODEL_BASE_DIR}/{MODEL_FILE}"
     save_loc = f"{OUTPUT_BASE_DIR}/{MODEL_NAME}"
-    print(f"[{model_loc}], [{save_loc}]")
-    pipe = StableDiffusionPipeline.from_single_file(
-        model_loc,
-        torch_dtype=torch.float16,
-        safety_checker=None,
-    )
-    pipe.scheduler = DPMSolverMultistepScheduler.from_config(
-        pipe.scheduler.config, use_karras_sigmas=True
-    )
-    pipe = pipe.to(device)
-    pipe.set_progress_bar_config(disable=True)
-    compel = Compel(tokenizer=pipe.tokenizer, text_encoder=pipe.text_encoder)
+    os.makedirs(save_loc, exist_ok=True)
+    tags_path = os.path.join(save_loc, tags_file)
+    tags_mode = "a" if append_tags else "w"
+    with open(tags_path, tags_mode, newline="", encoding="utf-8") as tags_file:
+        tags_writer = csv.DictWriter(tags_file, fieldnames=TAGS_CSV_COLUMNS)
+        if not append_tags or tags_file.tell() == 0:
+            tags_writer.writeheader()
 
-    total_images = (end_age - start_age + 1) * images_per_age
-    print(
-        f"Generating dataset: Ages {start_age} to {end_age}, "
-        f"{total_images} images total."
-    )
-    with tqdm(total=total_images, desc="Generating Images", unit="img") as pbar:
-        for age in range(start_age, end_age + 1):
-            age_dir = os.path.join(save_loc, str(age))
-            os.makedirs(age_dir, exist_ok=True)
-            num_images = images_per_age
-            for idx in range(num_images):
-                trials = 0
-                while(True):
+        if tags_only:
+            total_images = (end_age - start_age + 1) * images_per_age
+            print(f"Writing tags for {total_images} planned images to '{tags_path}'.")
+            for age in range(start_age, end_age + 1):
+                for _ in range(images_per_age):
                     seed = make_seed(image_counter)
-                    trials += 1
-                    image = generate_face_at_age(
-                        target_age=age, 
-                        seed=seed,
-                        pipe=pipe,
-                        compel=compel
-                    )
-                    if image is not None:
-                        break
+                    _, ethnicity, gender = build_prompt_and_tags(age, seed)
+                    tags_writer.writerow({
+                        "file_name": f"synth_{image_counter}.jpg",
+                        "age": age,
+                        "ethnicity": ETHNICITY_TAGS[ethnicity],
+                        "gender": gender.lower(),
+                    })
                     image_counter += 1
-                    if trials > 20:
-                        break
-                if image is None:
-                    continue
-                
-                output_path = os.path.join(age_dir, f"synth_{image_counter}.jpg")
-                image.save(output_path, format="JPEG", quality=95)
-                image_counter += 1
-                pbar.set_postfix(
-                    age=age, idx=f"{idx + 1}/{num_images}"
-                )
-                pbar.update(1)
+            return
+
+        print(f"[{model_loc}], [{save_loc}]")
+        pipe = StableDiffusionPipeline.from_single_file(
+            model_loc,
+            torch_dtype=torch.float16,
+            safety_checker=None,
+        )
+        pipe.scheduler = DPMSolverMultistepScheduler.from_config(
+            pipe.scheduler.config, use_karras_sigmas=True
+        )
+        pipe = pipe.to(device)
+        pipe.set_progress_bar_config(disable=True)
+        compel = Compel(tokenizer=pipe.tokenizer, text_encoder=pipe.text_encoder)
+
+        total_images = (end_age - start_age + 1) * images_per_age
+        print(
+            f"Generating dataset: Ages {start_age} to {end_age}, "
+            f"{total_images} images total."
+        )
+        with tqdm(total=total_images, desc="Generating Images", unit="img") as pbar:
+            for age in range(start_age, end_age + 1):
+                age_dir = os.path.join(save_loc, str(age))
+                os.makedirs(age_dir, exist_ok=True)
+                num_images = images_per_age
+                for idx in range(num_images):
+                    trials = 0
+                    while(True):
+                        seed = make_seed(image_counter)
+                        trials += 1
+                        image, ethnicity, gender = generate_face_at_age(
+                            target_age=age,
+                            seed=seed,
+                            pipe=pipe,
+                            compel=compel,
+                        )
+                        if image is not None:
+                            break
+                        image_counter += 1
+                        if trials >= MAX_GENERATION_ATTEMPTS:
+                            break
+                    if image is None:
+                        continue
+
+                    file_name = f"synth_{image_counter}.jpg"
+                    output_path = os.path.join(age_dir, file_name)
+                    image.save(output_path, format="JPEG", quality=95)
+                    tags_writer.writerow({
+                        "file_name": file_name,
+                        "age": age,
+                        "ethnicity": ETHNICITY_TAGS[ethnicity],
+                        "gender": gender.lower(),
+                    })
+                    image_counter += 1
+                    pbar.set_postfix(
+                        age=age, idx=f"{idx + 1}/{num_images}"
+                    )
+                    pbar.update(1)
 
     print(f"\nDone. Dataset saved to '{OUTPUT_BASE_DIR}'.")
 
@@ -329,4 +415,7 @@ if __name__ == "__main__":
         arguments.end_age,
         arguments.images_per_age,
         arguments.image_counter,
+        arguments.tags_only,
+        arguments.append_tags,
+        arguments.tags_file,
     )

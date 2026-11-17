@@ -50,7 +50,6 @@ def get_batch_evaluation_transforms():
         return None
     return BatchImageTransforms(
         grid_size=GRID_SIZE,
-        image_size=IMAGE_SIZE,
         device=DEVICE,
         mean=(0.485, 0.456, 0.406),
         std=(0.229, 0.224, 0.225),

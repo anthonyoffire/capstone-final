@@ -2,12 +2,12 @@ import os
 import pandas as pd
 
 aggregation_directories = [
-    r"..\images\serenity8020_train_val_test\val18",
+    r"..\images\fake\synth_serenity_85",
 ]
 save_names = []
-minAge = 5
-maxAge = 70
-def main():
+minAge = 1
+maxAge = 100
+def main(): 
     for index, aggregation_directory in enumerate(aggregation_directories):
         listRows = []
 

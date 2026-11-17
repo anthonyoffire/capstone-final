@@ -24,28 +24,44 @@ from binary_age_dataset import BinaryAgeDataset
 
 IMAGE_SIZE = 128
 GRID_SIZE = 1 # grid size x: x by x grid
-MODEL_NAME = "efficientnet_b0"
-BATCH_SIZE = 128
+INCREMENT_SHUFFLE_SEED = True
+MODELS = [f"efficientnet_b{index}" for index in range(8)] + [
+    "resnet50",
+    "densenet121",
+    "convnext_tiny",
+]
+MODEL_NAME = MODELS[0]
+BATCH_SIZE = 32
 NUM_EPOCHS = 20
 MIN_EPOCHS = 1
-PATIENCE = 5
+PATIENCE = 4
 MIN_DELTA = 0.0001
 NUM_WORKERS = 4
-PIN_MEMORY = False
-CHECKPOINT_DIR = Path("./best_models_bin2")
+PIN_MEMORY = True
+CHECKPOINT_DIR = Path("./best_models_bin/")
 CSV_BASE_DIR = Path("./synthetic_csv")
 
 M_SHORT_NAMES = {
-    "efficientnet_b0": "enb0"
+    model_name: f"en{model_name.rsplit('_', 1)[-1]}"
+    for model_name in MODELS
+    if model_name.startswith("efficientnet")
 }
+M_SHORT_NAMES.update({
+    "resnet50": "rn50",
+    "densenet121": "dn121",
+    "convnext_tiny": "cnt",
+})
 
 def get_training_transforms():
     return transforms.Compose([
         transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
-        PIL_Shuffler(grid_size=GRID_SIZE),
         transforms.RandomHorizontalFlip(),
         transforms.RandomRotation(10),
         transforms.ColorJitter(brightness=0.2, contrast=0.2),
+        PIL_Shuffler(
+            grid_size=GRID_SIZE,
+            increment_seed=INCREMENT_SHUFFLE_SEED,
+        ),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406],
                             std=[0.229, 0.224, 0.225]),
@@ -55,7 +71,10 @@ def get_training_transforms():
 def get_validation_transforms():
     return transforms.Compose([
         transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
-        PIL_Shuffler(grid_size=GRID_SIZE),
+        PIL_Shuffler(
+            grid_size=GRID_SIZE,
+            increment_seed=INCREMENT_SHUFFLE_SEED,
+        ),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406],
                             std=[0.229, 0.224, 0.225]),
@@ -89,10 +108,10 @@ def main(
         val_transform = get_gpu_input_transforms()
         batch_transforms = BatchImageTransforms(
             grid_size=GRID_SIZE,
-            image_size=IMAGE_SIZE,
             device=device,
             mean=(0.485, 0.456, 0.406),
             std=(0.229, 0.224, 0.225),
+            increment_seed=INCREMENT_SHUFFLE_SEED,
         )
         print("Image shuffling and augmentation will run on CUDA.")
     else:
@@ -114,7 +133,7 @@ def main(
         num_workers=NUM_WORKERS,
         pin_memory=PIN_MEMORY,
     )
-    validation_loader = torch.utils.data.DataLoader(
+    val_loader = torch.utils.data.DataLoader(
         validation_dataset,
         batch_size=BATCH_SIZE,
         shuffle=False,
@@ -123,14 +142,13 @@ def main(
     )
 
     classifier = build_model(MODEL_NAME).to(device)
-
     criterion = nn.BCELoss()
     optimizer = optim.Adam(classifier.parameters())
 
     train_source_name = Path(training_csv).stem
     short_name = M_SHORT_NAMES[MODEL_NAME]
-    checkpoint_path = CHECKPOINT_DIR / f"{short_name}_{train_source_name}_g{GRID_SIZE}.pt"
-    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    ckpt_path = CHECKPOINT_DIR / f"{short_name}_{train_source_name}_g{GRID_SIZE}.pt"
+    ckpt_path.parent.mkdir(parents=True, exist_ok=True)
 
     best_val_loss = float("inf")
     epochs_without_improvement = 0
@@ -171,7 +189,7 @@ def main(
             unit="img",
         ) as pbar:
             with torch.no_grad():
-                for inputs, labels in validation_loader:
+                for inputs, labels in val_loader:
                     inputs = inputs.to(device, non_blocking=True)
                     if batch_transforms is not None:
                         inputs = batch_transforms(inputs)
@@ -198,10 +216,10 @@ def main(
                     "image_size": IMAGE_SIZE,
                     "num_channels": num_channels,
                 },
-                checkpoint_path,
+                ckpt_path,
             )
             print(
-                f"Saved best validation checkpoint to {checkpoint_path} "
+                f"Saved best validation checkpoint to {ckpt_path} "
                 f"(loss={val_loss:.6f})"
             )
         else:
@@ -242,8 +260,29 @@ if __name__ == '__main__':
         required=True,
         help="Validation CSV; relative paths resolve from CSV_BASE_DIR.",
     )
+    parser.add_argument(
+        "--checkpoint_dir",
+        type=Path,
+        default=CHECKPOINT_DIR,
+        help="Directory for saved checkpoints (defaults to CHECKPOINT_DIR).",
+    )
+    parser.add_argument(
+        "--model",
+        choices=MODELS,
+        default=MODEL_NAME,
+        help="Torchvision model architecture to train (defaults to efficientnet_b0).",
+    )
+    parser.add_argument(
+        "--increment-shuffle-seed",
+        action=argparse.BooleanOptionalAction,
+        default=INCREMENT_SHUFFLE_SEED,
+        help="Use a different shuffle seed for each image (default: enabled).",
+    )
     args = parser.parse_args()
     GRID_SIZE = args.grid_size
+    CHECKPOINT_DIR = args.checkpoint_dir
+    INCREMENT_SHUFFLE_SEED = args.increment_shuffle_seed
+    MODEL_NAME = args.model
     freeze_support()
     main(
         training_csv=args.training_csv,

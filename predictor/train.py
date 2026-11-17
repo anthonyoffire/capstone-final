@@ -94,7 +94,6 @@ def run():
         validation_tf = get_gpu_input_transforms()
         batch_transforms = BatchImageTransforms(
             grid_size=GRID_SIZE,
-            image_size=IMAGE_SIZE,
             device=DEVICE,
             mean=(0.485, 0.456, 0.406),
             std=(0.229, 0.224, 0.225),

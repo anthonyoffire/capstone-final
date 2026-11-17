@@ -1,72 +1,31 @@
 """Apply the image shuffle and tensor augmentations to a whole batch."""
 
-import random
-
 import torch
 import torch.nn.functional as F
 
-from image_shuffler import SEED
+from image_shuffler import PIL_Shuffler, SEED
 
 
 class BatchImageTransforms:
     def __init__(
         self,
         grid_size: int,
-        image_size: int,
         device: str | torch.device,
         mean: tuple[float, float, float],
         std: tuple[float, float, float],
         seed: int = SEED,
+        increment_seed: bool = False,
     ):
-        if image_size % grid_size != 0:
-            raise ValueError("grid_size must evenly divide image_size")
-
         self.grid_size = grid_size
         self.device = torch.device(device)
-        indices = list(range(grid_size * grid_size))
-        random.Random(seed).shuffle(indices)
-        self.permutation = torch.tensor(
-            indices, dtype=torch.long, device=self.device
+        self.shuffler = PIL_Shuffler(
+            grid_size,
+            seed=seed,
+            increment_seed=increment_seed,
         )
         self.generator = torch.Generator(device=self.device).manual_seed(seed)
         self.mean = torch.tensor(mean, device=self.device)[None, :, None, None]
         self.std = torch.tensor(std, device=self.device)[None, :, None, None]
-
-    def _shuffle_tiles(self, images: torch.Tensor) -> torch.Tensor:
-        batch, channels, height, width = images.shape
-        tile_height = height // self.grid_size
-        tile_width = width // self.grid_size
-        tiles = (
-            images.reshape(
-                batch,
-                channels,
-                self.grid_size,
-                tile_height,
-                self.grid_size,
-                tile_width,
-            )
-            .permute(0, 1, 2, 4, 3, 5)
-            .reshape(
-                batch,
-                channels,
-                self.grid_size * self.grid_size,
-                tile_height,
-                tile_width,
-            )
-        )
-        tiles = tiles.index_select(2, self.permutation)
-        return (
-            tiles.reshape(
-                batch,
-                channels,
-                self.grid_size,
-                self.grid_size,
-                tile_height,
-                tile_width,
-            )
-            .permute(0, 1, 2, 4, 3, 5)
-            .reshape(batch, channels, height, width)
-        )
 
     def _augment(self, images: torch.Tensor) -> torch.Tensor:
         batch = images.shape[0]
@@ -130,7 +89,16 @@ class BatchImageTransforms:
 
     def __call__(self, images: torch.Tensor, augment: bool = False) -> torch.Tensor:
         images = images.to(dtype=torch.float32).div_(255.0)
-        images = self._shuffle_tiles(images)
         if augment:
             images = self._augment(images)
+        shuffled = self.shuffler(images)
+        if shuffled is None:
+            height, width = images.shape[-2:]
+            message = (
+                f"Image dimensions h={height} and w={width} must both be "
+                f"divisible by grid size g={self.grid_size}."
+            )
+            print(f"Error: {message}")
+            raise ValueError(message)
+        images = shuffled
         return (images - self.mean) / self.std
