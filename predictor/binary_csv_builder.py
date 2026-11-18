@@ -1,3 +1,4 @@
+import argparse
 import csv
 import math
 import os
@@ -295,5 +296,59 @@ def build_binary_csv() -> Path:
     )
     return output_path
 
-if __name__ == "__main__":
+def main() -> None:
+    global AGE_CUTOFF, DISTRIBUTION_GRAPH_DIR, DISTRIBUTION_TYPE
+    global INPUT_DIR, MAKE_GRAPH, OUTPUT_DIR
+
+    parser = argparse.ArgumentParser(
+        description="Build a binary-classification CSV from age-organized image folders."
+    )
+    parser.add_argument(
+        "-i",
+        "--input-dir",
+        type=Path,
+        default=INPUT_DIR,
+        help="Directory containing one subdirectory per age.",
+    )
+    parser.add_argument(
+        "-o",
+        "--output-dir",
+        type=Path,
+        default=OUTPUT_DIR,
+        help="Directory where the CSV will be written.",
+    )
+    parser.add_argument(
+        "-d",
+        "--distribution-type",
+        choices=DISTRIBUTIONS,
+        default=DISTRIBUTION_TYPE,
+        help="Use 'cn' for centered-normal train/validation data or 'all' for test data.",
+    )
+    parser.add_argument(
+        "-a",
+        "--age-cutoff",
+        type=int,
+        default=AGE_CUTOFF,
+        help="Age boundary used for the centered-normal distribution and binary labels.",
+    )
+    parser.add_argument(
+        "-n",
+        "--no-graph",
+        action="store_false",
+        dest="make_graph",
+        default=MAKE_GRAPH,
+        help="Do not save an age-distribution graph.",
+    )
+    args = parser.parse_args()
+
+    AGE_CUTOFF = args.age_cutoff
+    DISTRIBUTION_TYPE = args.distribution_type
+    INPUT_DIR = args.input_dir
+    MAKE_GRAPH = args.make_graph
+    OUTPUT_DIR = args.output_dir
+    DISTRIBUTION_GRAPH_DIR = OUTPUT_DIR / "distribution_graphs"
     build_binary_csv()
+
+
+if __name__ == "__main__":
+    main()
